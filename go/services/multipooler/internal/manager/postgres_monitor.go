@@ -1568,6 +1568,27 @@ func latestCompleteBackup(backups []*multipoolermanagerdatapb.BackupMetadata) *m
 // This is used by MonitorPostgres for auto-restore functionality.
 // Caller must hold the action lock.
 func (pm *MultipoolerManager) restoreAndStartPostgres(ctx context.Context) error {
+	// Re-check status to ensure conditions haven't changed
+	// (e.g., another process may have initialized or started postgres while we waited for lock)
+	if pm.pgctldClient == nil {
+		return errors.New("failed to re-check postgres status: pgctld client is unavailable")
+	}
+	statusResp, err := pm.pgctldClient.Status(ctx, &pgctldpb.StatusRequest{})
+	if err != nil {
+		return fmt.Errorf("failed to re-check postgres status: %w", err)
+	}
+	if statusResp == nil {
+		return errors.New("failed to re-check postgres status: empty response")
+	}
+
+	// Do not remove PGDATA unless pgctld confirms postgres is stopped or
+	// uninitialized. Any other status may mean postgres is running or starting.
+	if statusResp.Status != pgctldpb.ServerStatus_NOT_INITIALIZED &&
+		statusResp.Status != pgctldpb.ServerStatus_STOPPED {
+		pm.logger.InfoContext(ctx, "MonitorPostgres: postgres is active, skipping restore", "status", statusResp.Status.String())
+		return nil
+	}
+
 	restoreSentinelPresent, err := pm.hasRestoreSentinel()
 	if err != nil {
 		return fmt.Errorf("failed to check restore sentinel: %w", err)
@@ -1579,18 +1600,10 @@ func (pm *MultipoolerManager) restoreAndStartPostgres(ctx context.Context) error
 		}
 	}
 
-	// Re-check status to ensure conditions haven't changed
-	// (e.g., another process may have initialized or started postgres while we waited for lock)
-	if pm.pgctldClient != nil {
-		statusResp, err := pm.pgctldClient.Status(ctx, &pgctldpb.StatusRequest{})
-		if err == nil {
-			// If directory is now initialized, skip restore
-			if !restoreSentinelPresent && statusResp.Status != pgctldpb.ServerStatus_NOT_INITIALIZED {
-				pm.logger.InfoContext(ctx, "MonitorPostgres: directory became initialized after acquiring lock, skipping restore") //nolint:sloglint // message intentionally starts with an operation name or proper noun
-				return nil
-			}
-		}
-		// If status check fails, continue with restore attempt
+	// If directory is now initialized and there is no restore sentinel, skip restore.
+	if !restoreSentinelPresent && statusResp.Status != pgctldpb.ServerStatus_NOT_INITIALIZED {
+		pm.logger.InfoContext(ctx, "MonitorPostgres: directory became initialized after acquiring lock, skipping restore") //nolint:sloglint // message intentionally starts with an operation name or proper noun
+		return nil
 	}
 
 	// Get the latest complete backup. ListBackups returns backups

@@ -55,8 +55,12 @@ func (pm *MultipoolerManager) writeRestoreSentinel() error {
 // removeRestoreSentinel deletes the restore sentinel; a missing file is not an
 // error.
 func (pm *MultipoolerManager) removeRestoreSentinel() error {
-	if err := os.Remove(pm.restoreSentinelPath()); err != nil && !os.IsNotExist(err) {
+	path := pm.restoreSentinelPath()
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	return fsyncPath(filepath.Dir(path))
 }

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/multigres/multigres/go/common/backup"
@@ -270,8 +271,9 @@ func (pm *MultipoolerManager) GetPrimaryAsPg2Args(
 // retrying. Caller must hold the action lock.
 //
 // Requirements:
-// - The pooler must be a standby (not a primary)
-// - PGDATA must not exist (caller's responsibility to stop PostgreSQL and remove it)
+//   - The pooler must be a standby (not a primary)
+//   - PGDATA must be absent or empty (caller's responsibility to stop PostgreSQL
+//     and remove it if a prior restore left content behind)
 //
 // This function will:
 // 1. Execute pgbackrest restore to recreate PGDATA
@@ -321,10 +323,17 @@ func (pm *MultipoolerManager) restoreFromBackupLocked(ctx context.Context, backu
 	// do — a cohort member should only ever advance via streaming from the
 	// current leader. Might be good to add a best-effort check of this.
 
-	// Check that PGDATA doesn't exist (caller must remove it before restore)
-	if pm.hasDataDirectory() {
+	// Only this restore attempt may remove PGDATA during failure cleanup. A
+	// non-empty directory must be removed by the caller after confirming
+	// PostgreSQL is stopped and before retrying.
+	dataDir := postgresDataDir()
+	entries, err := os.ReadDir(dataDir)
+	if err != nil && !os.IsNotExist(err) {
+		return mterrors.Wrap(err, "failed to inspect PGDATA before restore")
+	}
+	if len(entries) > 0 {
 		return mterrors.New(mtrpcpb.Code_FAILED_PRECONDITION,
-			"cannot restore: PGDATA already exists; caller must stop PostgreSQL and remove PGDATA first")
+			"cannot restore: PGDATA is not empty; remove it before retrying")
 	}
 
 	if err := pm.writeRestoreSentinel(); err != nil {
