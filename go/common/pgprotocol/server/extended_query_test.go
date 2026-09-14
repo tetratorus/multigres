@@ -538,6 +538,70 @@ func TestExtendedQueryProtocolEndToEnd(t *testing.T) {
 	assert.Equal(t, byte(protocol.MsgReadyForQuery), msgType)
 }
 
+// TestExtendedQueryProtocolLibpqExecPrepared replays the exact message
+// sequence libpq's PQprepare + PQexecPrepared emits (and therefore what PHP
+// pdo_pgsql, Rust's tokio-postgres, and psql's \bind send for a prepared
+// statement): Parse/Sync, then Bind/Describe('P')/Execute/Sync in one batch.
+// libpq rejects the reply unless it is exactly BindComplete, RowDescription,
+// DataRow..., CommandComplete, ReadyForQuery — a ParameterDescription in the
+// portal describe reply, or a DataRow ahead of RowDescription, surfaces as
+// `server sent data ("D" message) without prior row description ("T" message)`.
+func TestExtendedQueryProtocolLibpqExecPrepared(t *testing.T) {
+	var readBuf bytes.Buffer
+	var writeBuf bytes.Buffer
+	conn := createExtendedQueryTestConn(t, &readBuf, &writeBuf, &testHandler{})
+
+	stmtName := "pdo_stmt_00000001"
+	query := "select 1 as one"
+
+	// Batch 1: Parse + Sync (PQprepare).
+	writeTestInt32(&readBuf, int32(4+len(stmtName)+1+len(query)+1+2))
+	writeTestString(&readBuf, stmtName)
+	writeTestString(&readBuf, query)
+	writeTestInt16(&readBuf, 0)
+	require.NoError(t, conn.handleMessage(protocol.MsgParse))
+	writeTestInt32(&readBuf, 4)
+	require.NoError(t, conn.handleMessage(protocol.MsgSync))
+
+	// Batch 2: Bind + Describe('P') + Execute + Sync (PQexecPrepared), all
+	// read before any reply is inspected, as a pipelining client would send it.
+	writeTestInt32(&readBuf, int32(4+1+len(stmtName)+1+2+2+2))
+	writeTestString(&readBuf, "") // unnamed portal
+	writeTestString(&readBuf, stmtName)
+	writeTestInt16(&readBuf, 0)
+	writeTestInt16(&readBuf, 0)
+	writeTestInt16(&readBuf, 0)
+	writeTestInt32(&readBuf, 4+1+1)
+	readBuf.WriteByte('P')
+	writeTestString(&readBuf, "")
+	writeTestInt32(&readBuf, 4+1+4)
+	writeTestString(&readBuf, "")
+	writeTestInt32(&readBuf, 0)
+	writeTestInt32(&readBuf, 4)
+
+	require.NoError(t, conn.handleMessage(protocol.MsgBind))
+	require.NoError(t, conn.handleMessage(protocol.MsgDescribe))
+	require.NoError(t, conn.handleMessage(protocol.MsgExecute))
+	require.NoError(t, conn.handleMessage(protocol.MsgSync))
+
+	var got []byte
+	for writeBuf.Len() > 0 {
+		msgType, _, _ := readMessageTypeAndLength(t, &writeBuf)
+		got = append(got, msgType)
+	}
+	want := []byte{
+		protocol.MsgParseComplete,
+		protocol.MsgReadyForQuery,
+		protocol.MsgBindComplete,
+		protocol.MsgRowDescription,
+		protocol.MsgDataRow,
+		protocol.MsgCommandComplete,
+		protocol.MsgReadyForQuery,
+	}
+	assert.Equal(t, string(want), string(got),
+		"wire sequence must match what libpq expects for PQexecPrepared")
+}
+
 // TestExtendedQueryProtocolUnnamedStatements tests unnamed statements and portals.
 func TestExtendedQueryProtocolUnnamedStatements(t *testing.T) {
 	var readBuf bytes.Buffer
