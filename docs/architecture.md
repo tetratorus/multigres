@@ -112,6 +112,7 @@ All interprocess communication is done using gRPC. From gRPC, we rely on the fol
 ### Open Telemetry
 
 Open Telemetry is now the industry standard for metrics and tracing. Multigres components use OTel for observability.
+Export is configured entirely through the standard `OTEL_*` environment variables (via `autoexport`); components do not expose a built-in `/metrics` endpoint. Metrics can be pushed over OTLP or pulled by setting `OTEL_METRICS_EXPORTER=prometheus`. See the `go/tools/telemetry` package documentation for details.
 
 ### Viper
 

@@ -42,6 +42,20 @@
 //	    --config.file=/etc/prometheus/prometheus.yml \
 //	    --web.enable-otlp-receiver \
 //	    --enable-feature=exemplar-storage
+//
+// Metrics can also be pulled instead of pushed. There is deliberately no
+// built-in /metrics endpoint on the servenv HTTP port; instead, autoexport can
+// serve a Prometheus /metrics endpoint on its own listener:
+//
+//	OTEL_METRICS_EXPORTER=prometheus \
+//	  OTEL_EXPORTER_PROMETHEUS_HOST=localhost \
+//	  OTEL_EXPORTER_PROMETHEUS_PORT=9464 \
+//	  multipooler ...
+//
+// Each process binds its own listener, so when several multigres processes run
+// on one host (e.g. the local provisioner) every one needs a distinct
+// OTEL_EXPORTER_PROMETHEUS_PORT, or the second process fails to bind. Prefer
+// the push-based OTLP setup above in that case.
 package telemetry
 
 import (
@@ -245,7 +259,8 @@ func (t *Telemetry) initTracing(ctx context.Context, res *resource.Resource) err
 	return nil
 }
 
-// initMetrics initializes the MeterProvider with dual exporters (autoexport + Prometheus)
+// initMetrics initializes the MeterProvider using autoexport.
+// The reader is configured via OTEL_METRICS_EXPORTER (otlp, prometheus, console, none).
 func (t *Telemetry) initMetrics(ctx context.Context, res *resource.Resource) error {
 	var metricReader sdkmetric.Reader
 	var err error
@@ -267,7 +282,6 @@ func (t *Telemetry) initMetrics(ctx context.Context, res *resource.Resource) err
 	}
 
 	t.meterProvider = sdkmetric.NewMeterProvider(
-		// TODO(dweitzman): Add an additional prometheus exporter that's always at /metrics for debugging
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(metricReader), // Configured via env vars or test reader
 	)
