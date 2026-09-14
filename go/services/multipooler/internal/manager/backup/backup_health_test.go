@@ -677,3 +677,52 @@ func TestRefreshArchiver_SerializesTransitionLogging(t *testing.T) {
 	assert.Equal(t, "WAL archiving recovered", records[1].Message)
 	assert.False(t, e.Health().Snapshot().ArchivingFailing)
 }
+
+func TestRefreshArchiver_SerializesStandbyClear(t *testing.T) {
+	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
+	handler := &blockingSlogHandler{
+		firstEntered:   make(chan struct{}),
+		releaseFirst:   make(chan struct{}),
+		secondAppended: make(chan struct{}),
+	}
+	e.logger = slog.New(handler)
+	e.SetArchiverStatsProvider(func(context.Context) (ArchiverStats, error) {
+		return ArchiverStats{
+			LastArchived: time.Unix(1735984000, 0),
+			LastFailed:   time.Unix(1735984900, 0),
+			FailedCount:  3,
+		}, nil
+	})
+
+	primaryDone := make(chan struct{})
+	go func() {
+		e.refreshArchiver(t.Context(), pgmode.Primary)
+		close(primaryDone)
+	}()
+	<-handler.firstEntered
+
+	standbyDone := make(chan struct{})
+	go func() {
+		e.refreshArchiver(t.Context(), pgmode.InRecovery)
+		close(standbyDone)
+	}()
+
+	// With all archive-state mutations serialized, standby clearing is blocked
+	// until the primary transition finishes logging.
+	select {
+	case <-standbyDone:
+		t.Fatal("standby cleared archive state before the primary transition finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(handler.releaseFirst)
+
+	<-primaryDone
+	<-standbyDone
+
+	records := handler.Records()
+	require.Len(t, records, 1)
+	assert.Equal(t, slog.LevelWarn, records[0].Level)
+	snap := e.Health().Snapshot()
+	assert.False(t, snap.ArchivingFailing)
+	assert.Zero(t, snap.ArchiveFailedCount)
+}

@@ -469,7 +469,9 @@ func resolveReadiness(reachable bool, repoReason, configReason string, archiving
 // system-view read, no forced I/O.
 func (e *Engine) refreshArchiver(ctx context.Context, pgMode pgmode.Mode) (archivingFailing bool) {
 	if !pgMode.OutOfRecovery() {
+		e.archiverMu.Lock()
 		e.health.clearArchiver()
+		e.archiverMu.Unlock()
 		return false
 	}
 

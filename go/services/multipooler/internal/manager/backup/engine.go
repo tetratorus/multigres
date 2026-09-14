@@ -103,8 +103,8 @@ type Engine struct {
 	id       Identity
 	settings Settings
 
-	// archiverMu serializes applying archive stats with its transition log so
-	// concurrent refreshes cannot emit logs out of order.
+	// archiverMu serializes archive-state mutations with their transition log
+	// so concurrent refreshes cannot emit logs out of order.
 	archiverMu sync.Mutex
 
 	// mu guards the config resolved at runtime: the pgbackrest.conf path and
