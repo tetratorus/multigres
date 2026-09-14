@@ -106,6 +106,12 @@
                 .Backups.WALArchiveLag}}{{.Backups.WALArchiveLag}}{{else}}—{{end}}
               </td>
             </tr>
+            {{if .Backups.WALArchiveFailure}}
+            <tr>
+              <th>WAL archiving failing</th>
+              <td><span class="error">{{.Backups.WALArchiveFailure}}</span></td>
+            </tr>
+            {{end}}
             <tr>
               <th>Backup lease held</th>
               <td>{{if .Backups.LeaseHeld}}yes{{else}}no{{end}}</td>

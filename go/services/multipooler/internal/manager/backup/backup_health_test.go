@@ -15,8 +15,10 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -353,7 +355,7 @@ func TestRefreshArchiver_SkipsOnStandby(t *testing.T) {
 	poolerDir := t.TempDir()
 	e, _ := newTestEngine(t, poolerDir, "tg1", "0", "/tmp/backups")
 	// Prime a stale value to ensure standby clears it.
-	e.Health().applyArchiver(time.Unix(1735984900, 0))
+	e.Health().applyArchiver(ArchiverStats{LastArchived: time.Unix(1735984900, 0)}, false)
 	called := false
 	e.SetArchiverStatsProvider(func(context.Context) (ArchiverStats, error) {
 		called = true
@@ -380,6 +382,77 @@ func TestRefreshArchiver_ReportsFailingWhenLastFailedNewer(t *testing.T) {
 	assert.True(t, failing, "a failure newer than the last success means archiving is failing")
 	snap := e.Health().Snapshot()
 	assert.Equal(t, archived, snap.LastArchived)
+	assert.Equal(t, failed, snap.LastArchiveFailed)
+	assert.Equal(t, int64(3), snap.ArchiveFailedCount)
+	assert.True(t, snap.ArchivingFailing)
+}
+
+func TestRefreshArchiver_RecoveryClearsFailingButKeepsHistory(t *testing.T) {
+	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
+	failed := time.Unix(1735984000, 0)
+	archived := time.Unix(1735984900, 0) // success newer than the last failure
+	e.SetArchiverStatsProvider(func(context.Context) (ArchiverStats, error) {
+		return ArchiverStats{LastArchived: archived, LastFailed: failed, FailedCount: 3}, nil
+	})
+
+	assert.False(t, e.refreshArchiver(t.Context(), pgmode.Primary))
+	snap := e.Health().Snapshot()
+	assert.False(t, snap.ArchivingFailing)
+	assert.Equal(t, int64(3), snap.ArchiveFailedCount, "failed_count is cumulative history, not the verdict")
+	assert.Equal(t, failed, snap.LastArchiveFailed)
+}
+
+func TestRefreshArchiver_QueryErrorKeepsFailingVerdict(t *testing.T) {
+	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
+	primed := ArchiverStats{LastArchived: time.Unix(1735984000, 0), LastFailed: time.Unix(1735984900, 0), FailedCount: 2}
+	e.Health().applyArchiver(primed, true)
+	e.SetArchiverStatsProvider(func(context.Context) (ArchiverStats, error) {
+		return ArchiverStats{}, errors.New("query failed")
+	})
+
+	assert.True(t, e.refreshArchiver(t.Context(), pgmode.Primary), "a transient read error must not flip a failing primary back to ok")
+	snap := e.Health().Snapshot()
+	assert.True(t, snap.ArchivingFailing)
+	assert.Equal(t, primed.FailedCount, snap.ArchiveFailedCount)
+	assert.Equal(t, primed.LastFailed, snap.LastArchiveFailed)
+}
+
+func TestRefreshArchiver_NilProviderKeepsFailingVerdict(t *testing.T) {
+	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
+	e.Health().applyArchiver(ArchiverStats{LastFailed: time.Unix(1735984900, 0), FailedCount: 1}, true)
+	assert.True(t, e.refreshArchiver(t.Context(), pgmode.Primary))
+}
+
+func TestLogReadinessTransition(t *testing.T) {
+	var buf bytes.Buffer
+	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
+	e.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	e.Health().applyArchiver(ArchiverStats{LastFailed: time.Unix(1735984900, 0), FailedCount: 4}, true)
+
+	e.logReadinessTransition(t.Context(), ReadyReasonOK, ReadyReasonOK)
+	assert.Empty(t, buf.String(), "no transition, no log")
+
+	e.logReadinessTransition(t.Context(), ReadyReasonOK, ReadyReasonArchivingFailing)
+	out := buf.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, "reason=archiving_failing")
+	assert.Contains(t, out, "previous_reason=ok")
+	assert.Contains(t, out, "archive_failed_count=4")
+	buf.Reset()
+
+	e.logReadinessTransition(t.Context(), ReadyReasonArchivingFailing, ReadyReasonArchivingFailing)
+	assert.Empty(t, buf.String(), "a persisting reason logs only once")
+
+	e.logReadinessTransition(t.Context(), ReadyReasonArchivingFailing, ReadyReasonRepoUnreachable)
+	assert.Contains(t, buf.String(), "level=WARN")
+	assert.NotContains(t, buf.String(), "archive_failed_count", "archiver detail only when archiving is the cause")
+	buf.Reset()
+
+	e.logReadinessTransition(t.Context(), ReadyReasonRepoUnreachable, ReadyReasonOK)
+	out = buf.String()
+	assert.Contains(t, out, "level=INFO")
+	assert.Contains(t, out, "backups ready")
+	assert.Contains(t, out, "previous_reason=repo_unreachable")
 }
 
 func TestBackupHealthSnapshot_ReflectsState(t *testing.T) {
@@ -395,6 +468,9 @@ func TestBackupHealthSnapshot_ReflectsState(t *testing.T) {
 	tr.ready = true
 	tr.reason = ReadyReasonOK
 	tr.lastArchived = archived
+	tr.lastArchiveFailed = failAt
+	tr.archiveFailedCount = 7
+	tr.archivingFailing = true
 	tr.failuresSinceSuccess = 2
 	tr.inProgressStart = inProgress
 	tr.leaseHeld = true
@@ -409,11 +485,56 @@ func TestBackupHealthSnapshot_ReflectsState(t *testing.T) {
 	assert.True(t, snap.Ready)
 	assert.Equal(t, ReadyReasonOK, snap.Reason)
 	assert.Equal(t, archived, snap.LastArchived)
+	assert.Equal(t, failAt, snap.LastArchiveFailed)
+	assert.Equal(t, int64(7), snap.ArchiveFailedCount)
+	assert.True(t, snap.ArchivingFailing)
 	assert.Equal(t, int64(2), snap.FailuresSinceSuccess)
 	assert.Equal(t, inProgress, snap.InProgressStart)
 	assert.True(t, snap.LeaseHeld)
 	assert.Equal(t, "boom", snap.LastFailErr)
 	assert.Equal(t, failAt, snap.LastFailAt)
+}
+
+func TestSnapshot_Proto(t *testing.T) {
+	stop := time.Unix(1735984800, 0).UTC()
+	failed := time.Unix(1735984900, 0).UTC()
+	snap := Snapshot{
+		Ready:                false,
+		Reason:               ReadyReasonArchivingFailing,
+		LastSuccessStop:      stop,
+		CompleteCount:        3,
+		FailuresSinceSuccess: 1,
+		LastFailErr:          "boom",
+		LastFailAt:           failed,
+		LeaseHeld:            true,
+		LastArchived:         stop,
+		LastArchiveFailed:    failed,
+		ArchiveFailedCount:   7,
+		ArchivingFailing:     true,
+		LastRefresh:          failed,
+	}
+
+	pb := snap.Proto()
+	assert.False(t, pb.GetReady())
+	assert.Equal(t, ReadyReasonArchivingFailing, pb.GetReason())
+	assert.Equal(t, stop, pb.GetLastSuccessfulBackupTime().AsTime())
+	assert.Equal(t, int64(3), pb.GetCompleteBackupCount())
+	assert.Equal(t, int64(1), pb.GetFailuresSinceSuccess())
+	assert.Equal(t, "boom", pb.GetLastFailureError())
+	assert.Equal(t, failed, pb.GetLastFailureTime().AsTime())
+	assert.Nil(t, pb.GetBackupInProgressSince(), "zero time must be unset, not the epoch")
+	assert.True(t, pb.GetLeaseHeld())
+	assert.Equal(t, stop, pb.GetWalLastArchivedTime().AsTime())
+	assert.Equal(t, failed, pb.GetWalLastArchiveFailedTime().AsTime())
+	assert.Equal(t, int64(7), pb.GetWalArchiveFailedCount())
+	assert.True(t, pb.GetWalArchivingFailing())
+	assert.Equal(t, failed, pb.GetLastRefreshTime().AsTime())
+
+	fresh := NewHealthTracker().Snapshot().Proto()
+	assert.Equal(t, ReadyReasonUnknown, fresh.GetReason())
+	assert.Nil(t, fresh.GetLastSuccessfulBackupTime())
+	assert.Nil(t, fresh.GetWalLastArchivedTime())
+	assert.Nil(t, fresh.GetLastRefreshTime())
 }
 
 func TestRefreshFromRepo_RepoUnreachableRetainsCache(t *testing.T) {
@@ -498,7 +619,7 @@ func TestCheckBackupSettings_DoesNotBlockOnNilOrError(t *testing.T) {
 func TestRefreshArchiver_QueryErrorKeepsCache(t *testing.T) {
 	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
 	primed := time.Unix(1735984900, 0)
-	e.Health().applyArchiver(primed)
+	e.Health().applyArchiver(ArchiverStats{LastArchived: primed}, false)
 	e.SetArchiverStatsProvider(func(context.Context) (ArchiverStats, error) {
 		return ArchiverStats{}, errors.New("query failed")
 	})

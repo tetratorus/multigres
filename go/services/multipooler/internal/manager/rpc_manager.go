@@ -351,7 +351,8 @@ func (pm *MultipoolerManager) Status(ctx context.Context) (*multipoolermanagerda
 	}
 
 	resp := &multipoolermanagerdatapb.StatusResponse{
-		Status: poolerStatus,
+		Status:       poolerStatus,
+		BackupHealth: pm.BackupStatusSnapshot().Proto(),
 	}
 
 	// Best-effort status report: prefer a fresh read, fall back to the cached

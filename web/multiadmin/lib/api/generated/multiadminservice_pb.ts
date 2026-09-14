@@ -20,7 +20,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Duration, Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 import { Cell, ConsensusStatus, Database, ExternallyCertifiedRevocation, ID, Multigateway, Multiorch, Multipooler, RoutingRole, RulePosition, ShardKey, ShardRule } from "./clustermetadata_pb";
-import { Status } from "./multipoolermanagerdata_pb";
+import { BackupHealth, Status } from "./multipoolermanagerdata_pb";
 import { ConsolidatorStats, QueryRegistrySnapshot } from "./multigatewaymanagerdata_pb";
 
 /**
@@ -1524,6 +1524,13 @@ export class GetPoolerStatusResponse extends Message<GetPoolerStatusResponse> {
    */
   consensusStatus?: ConsensusStatus;
 
+  /**
+   * backup_health is the pooler's backup/WAL-archiving health, forwarded from StatusResponse.
+   *
+   * @generated from field: multipoolermanagerdata.BackupHealth backup_health = 3;
+   */
+  backupHealth?: BackupHealth;
+
   constructor(data?: PartialMessage<GetPoolerStatusResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1534,6 +1541,7 @@ export class GetPoolerStatusResponse extends Message<GetPoolerStatusResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "status", kind: "message", T: Status },
     { no: 2, name: "consensus_status", kind: "message", T: ConsensusStatus },
+    { no: 3, name: "backup_health", kind: "message", T: BackupHealth },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetPoolerStatusResponse {

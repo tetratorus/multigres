@@ -352,7 +352,7 @@ func TestMetrics_HealthGauges_Populated(t *testing.T) {
 	tr := NewHealthTracker()
 	tr.applyRepoInfo(time.Now().Add(-time.Hour), 4)
 	tr.applyReadiness(true, ReadyReasonOK)
-	tr.applyArchiver(time.Now().Add(-30 * time.Second))
+	tr.applyArchiver(ArchiverStats{LastArchived: time.Now().Add(-30 * time.Second)}, false)
 	tr.BackupStarted() // sets inProgressStart
 	tr.SetLeaseHeld(true)
 	require.NoError(t, m.RegisterHealthCallback(tr))

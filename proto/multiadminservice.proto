@@ -448,6 +448,8 @@ message GetPoolerStatusResponse {
   multipoolermanagerdata.Status status = 1;
   // consensus_status is the pooler's current consensus state, forwarded from StatusResponse.
   clustermetadata.ConsensusStatus consensus_status = 2;
+  // backup_health is the pooler's backup/WAL-archiving health, forwarded from StatusResponse.
+  multipoolermanagerdata.BackupHealth backup_health = 3;
 }
 
 // PostgreSQL Monitoring Control operation messages

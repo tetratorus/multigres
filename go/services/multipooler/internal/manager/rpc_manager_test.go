@@ -502,6 +502,8 @@ func TestReplicationStatus(t *testing.T) {
 		assert.NotNil(t, status.Status.PrimaryStatus, "PrimaryStatus should be populated")
 		assert.Nil(t, status.Status.ReplicationStatus, "ReplicationStatus should be nil for PRIMARY")
 		assert.Equal(t, "0/12345678", status.Status.PrimaryStatus.Lsn)
+		require.NotNil(t, status.BackupHealth, "backup health should always be reported")
+		assert.NotEmpty(t, status.BackupHealth.Reason, "readiness reason is always one of the bounded constants")
 	})
 
 	t.Run("REPLICA_pooler_returns_replication_status", func(t *testing.T) {

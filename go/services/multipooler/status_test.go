@@ -66,6 +66,27 @@ func TestBuildBackupStatusView_WithBackup(t *testing.T) {
 	assert.Contains(t, view.LastFailure, "boom")
 	assert.Contains(t, view.LastFailure, failAt.Format(time.RFC3339))
 	assert.Contains(t, view.LastRefreshed, "ago", "should render the last-refreshed time with an age")
+	assert.Empty(t, view.WALArchiveFailure, "no archive failure row when archiving is not failing")
+}
+
+func TestBuildBackupStatusView_WALArchiveFailure(t *testing.T) {
+	failedAt := time.Now().Add(-2 * time.Minute)
+	snap := backupengine.Snapshot{
+		Reason:             backupengine.ReadyReasonArchivingFailing,
+		LastArchived:       time.Now().Add(-time.Hour),
+		LastArchiveFailed:  failedAt,
+		ArchiveFailedCount: 12,
+		ArchivingFailing:   true,
+	}
+	view := buildBackupStatusView(snap)
+	assert.Contains(t, view.WALArchiveFailure, "12 failures")
+	assert.Contains(t, view.WALArchiveFailure, failedAt.Format(time.RFC3339))
+	assert.Contains(t, view.WALArchiveFailure, "ago")
+
+	// Recovered: history remains in the snapshot but is no longer an error.
+	snap.ArchivingFailing = false
+	snap.LastArchived = time.Now()
+	assert.Empty(t, buildBackupStatusView(snap).WALArchiveFailure)
 }
 
 func TestBuildBackupStatusView_NoBackup(t *testing.T) {

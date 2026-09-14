@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/multigres/multigres/go/common/constants"
 	multipoolermanagerdata "github.com/multigres/multigres/go/pb/multipoolermanagerdata"
 	"github.com/multigres/multigres/go/services/multipooler/internal/pgmode"
@@ -70,8 +72,14 @@ type HealthTracker struct {
 	ready  bool
 	reason string // one of the ReadyReason* constants
 
-	// WAL archive lag (primary only; set from pg_stat_archiver).
-	lastArchived time.Time // zero if unknown / not primary
+	// WAL archiving (primary only; set from pg_stat_archiver). failing is the
+	// verdict behind ReadyReasonArchivingFailing: the most recent archive attempt
+	// failed. archiveFailedCount is cumulative since the last stats reset, so it
+	// is history, not a health signal on its own.
+	lastArchived       time.Time // zero if unknown / not primary
+	lastArchiveFailed  time.Time // zero if no failure recorded / not primary
+	archiveFailedCount int64
+	archivingFailing   bool
 
 	// Updated inline by the Backup() RPC.
 	failuresSinceSuccess int64
@@ -101,6 +109,9 @@ type Snapshot struct {
 	Ready                bool
 	Reason               string
 	LastArchived         time.Time // zero if unknown / not primary
+	LastArchiveFailed    time.Time // zero if no failure recorded / not primary
+	ArchiveFailedCount   int64     // cumulative since pg_stat_reset_shared('archiver')
+	ArchivingFailing     bool      // most recent archive attempt failed
 	FailuresSinceSuccess int64
 	InProgressStart      time.Time // zero when no backup running
 	LeaseHeld            bool
@@ -124,6 +135,9 @@ func (t *HealthTracker) Snapshot() Snapshot {
 		Ready:                t.ready,
 		Reason:               reason,
 		LastArchived:         t.lastArchived,
+		LastArchiveFailed:    t.lastArchiveFailed,
+		ArchiveFailedCount:   t.archiveFailedCount,
+		ArchivingFailing:     t.archivingFailing,
 		FailuresSinceSuccess: t.failuresSinceSuccess,
 		InProgressStart:      t.inProgressStart,
 		LeaseHeld:            t.leaseHeld,
@@ -131,6 +145,35 @@ func (t *HealthTracker) Snapshot() Snapshot {
 		LastFailAt:           t.lastFailAt,
 		LastRefresh:          t.lastRefresh,
 	}
+}
+
+// Proto converts the snapshot for the Status RPC. Zero times map to unset
+// fields rather than the Unix epoch so callers can distinguish "never" from
+// "at 1970-01-01".
+func (s Snapshot) Proto() *multipoolermanagerdata.BackupHealth {
+	return &multipoolermanagerdata.BackupHealth{
+		Ready:                    s.Ready,
+		Reason:                   s.Reason,
+		LastSuccessfulBackupTime: timestampOrNil(s.LastSuccessStop),
+		CompleteBackupCount:      s.CompleteCount,
+		FailuresSinceSuccess:     s.FailuresSinceSuccess,
+		LastFailureError:         s.LastFailErr,
+		LastFailureTime:          timestampOrNil(s.LastFailAt),
+		BackupInProgressSince:    timestampOrNil(s.InProgressStart),
+		LeaseHeld:                s.LeaseHeld,
+		WalLastArchivedTime:      timestampOrNil(s.LastArchived),
+		WalLastArchiveFailedTime: timestampOrNil(s.LastArchiveFailed),
+		WalArchiveFailedCount:    s.ArchiveFailedCount,
+		WalArchivingFailing:      s.ArchivingFailing,
+		LastRefreshTime:          timestampOrNil(s.LastRefresh),
+	}
+}
+
+func timestampOrNil(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	return timestamppb.New(t)
 }
 
 // applyRepoInfo stores the repo-derived state computed by the poller.
@@ -141,19 +184,33 @@ func (t *HealthTracker) applyRepoInfo(lastSuccessStop time.Time, completeCount i
 	t.completeCount = completeCount
 }
 
-// applyReadiness stores the readiness state computed by the poller.
-func (t *HealthTracker) applyReadiness(ready bool, reason string) {
+// applyReadiness stores the readiness state computed by the poller and returns
+// the reason it replaced, so the caller can log transitions without holding mu.
+func (t *HealthTracker) applyReadiness(ready bool, reason string) (previous string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	previous = t.reason
 	t.ready = ready
 	t.reason = reason
+	return previous
 }
 
 // applyArchiver stores the WAL archive state computed by the poller.
-func (t *HealthTracker) applyArchiver(lastArchived time.Time) {
+func (t *HealthTracker) applyArchiver(stats ArchiverStats, failing bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.lastArchived = lastArchived
+	t.lastArchived = stats.LastArchived
+	t.lastArchiveFailed = stats.LastFailed
+	t.archiveFailedCount = stats.FailedCount
+	t.archivingFailing = failing
+}
+
+// archivingFailingCached returns the last stored archiving verdict, for polls
+// that could not refresh it.
+func (t *HealthTracker) archivingFailingCached() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.archivingFailing
 }
 
 // SetLeaseHeld records whether this pooler currently holds the backup lease.
@@ -287,7 +344,31 @@ func (e *Engine) refreshHealth(ctx context.Context) {
 	archivingFailing := e.refreshArchiver(ctx, pgMode)
 
 	reason := resolveReadiness(reachable, repoReason, configReason, archivingFailing)
-	e.health.applyReadiness(reason == ReadyReasonOK, reason)
+	e.logReadinessTransition(ctx, e.health.applyReadiness(reason == ReadyReasonOK, reason), reason)
+}
+
+// logReadinessTransition emits one log line per readiness change: a warning
+// when backups become not-ready (with the archiver detail when that is the
+// cause, since pg_stat_archiver is the only place it is recorded) and an info
+// line on recovery. Bounded to at most one line per poll, so a flapping
+// archive_command cannot log faster than the poll interval.
+func (e *Engine) logReadinessTransition(ctx context.Context, previous, current string) {
+	if previous == current {
+		return
+	}
+	if current == ReadyReasonOK {
+		e.logger.InfoContext(ctx, "backup health: backups ready", "previous_reason", previous)
+		return
+	}
+	attrs := []any{"reason", current, "previous_reason", previous}
+	if current == ReadyReasonArchivingFailing {
+		snap := e.health.Snapshot()
+		attrs = append(attrs,
+			"archive_failed_count", snap.ArchiveFailedCount,
+			"last_archive_failed", snap.LastArchiveFailed,
+			"last_archived", snap.LastArchived)
+	}
+	e.logger.WarnContext(ctx, "backup health: backups not ready", attrs...)
 }
 
 // resolveRole returns the local postgres recovery mode, defaulting to primary
@@ -424,27 +505,30 @@ func resolveReadiness(reachable bool, repoReason, configReason string, archiving
 	return ReadyReasonOK
 }
 
-// refreshArchiver refreshes the WAL archive lag gauge from pg_stat_archiver and
+// refreshArchiver refreshes the WAL archive state from pg_stat_archiver and
 // reports whether archiving is currently failing (the most recent archive
 // attempt failed). Only a primary archives WAL, so on a standby it clears the
-// cached value (the gauge stops emitting) and reports not-failing. This is a
-// passive, continuous signal — a cheap system-view read, no forced I/O.
+// cached state (the lag gauge stops emitting) and reports not-failing. When the
+// view cannot be read the cached verdict stands, matching the repo/settings
+// paths: a transient query failure must not flip a failing primary back to ok.
+// This is a passive, continuous signal — a cheap system-view read, no forced I/O.
 func (e *Engine) refreshArchiver(ctx context.Context, pgMode pgmode.Mode) (archivingFailing bool) {
 	if !pgMode.OutOfRecovery() {
-		e.health.applyArchiver(time.Time{})
+		e.health.applyArchiver(ArchiverStats{}, false)
 		return false
 	}
 
 	fn := e.archiverStatsProvider()
 	if fn == nil {
-		return false
+		return e.health.archivingFailingCached()
 	}
 	stats, err := fn(ctx)
 	if err != nil {
-		e.logger.DebugContext(ctx, "backup health: pg_stat_archiver query failed; keeping cached lag", "error", err)
-		return false
+		e.logger.DebugContext(ctx, "backup health: pg_stat_archiver query failed; keeping cached archive state", "error", err)
+		return e.health.archivingFailingCached()
 	}
 
-	e.health.applyArchiver(stats.LastArchived)
-	return stats.FailedCount > 0 && stats.LastFailed.After(stats.LastArchived)
+	archivingFailing = stats.FailedCount > 0 && stats.LastFailed.After(stats.LastArchived)
+	e.health.applyArchiver(stats, archivingFailing)
+	return archivingFailing
 }

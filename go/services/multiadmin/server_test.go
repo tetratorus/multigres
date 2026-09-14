@@ -660,6 +660,12 @@ func TestMultiadminServerGetPoolerStatus(t *testing.T) {
 			ConsensusStatus: &clustermetadatapb.ConsensusStatus{
 				TermRevocation: &clustermetadatapb.TermRevocation{RevokedBelowTerm: 1},
 			},
+			BackupHealth: &multipoolermanagerdatapb.BackupHealth{
+				Ready:                 false,
+				Reason:                "archiving_failing",
+				WalArchivingFailing:   true,
+				WalArchiveFailedCount: 3,
+			},
 		})
 
 		req := &multiadminpb.GetPoolerStatusRequest{
@@ -677,6 +683,10 @@ func TestMultiadminServerGetPoolerStatus(t *testing.T) {
 		assert.Equal(t, "0/1000000", resp.Status.WalPosition)
 		require.NotNil(t, resp.ConsensusStatus.GetTermRevocation())
 		assert.Equal(t, int64(1), resp.ConsensusStatus.GetTermRevocation().GetRevokedBelowTerm())
+		require.NotNil(t, resp.BackupHealth)
+		assert.Equal(t, "archiving_failing", resp.BackupHealth.GetReason())
+		assert.True(t, resp.BackupHealth.GetWalArchivingFailing())
+		assert.Equal(t, int64(3), resp.BackupHealth.GetWalArchiveFailedCount())
 	})
 
 	t.Run("rpc error returns Unavailable", func(t *testing.T) {

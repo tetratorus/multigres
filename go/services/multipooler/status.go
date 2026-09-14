@@ -68,8 +68,13 @@ type BackupStatusView struct {
 	Ready         bool   `json:"ready"`
 	ReadyReason   string `json:"ready_reason"`
 	WALArchiveLag string `json:"wal_archive_lag"` // empty when unknown / standby
-	LeaseHeld     bool   `json:"lease_held"`
-	LastFailure   string `json:"last_failure"` // err + timestamp; empty if none
+	// WALArchiveFailure describes the current archive failure: "<failed_count>
+	// failures, last <timestamp> (<age> ago)". Empty unless the most recent
+	// archive attempt failed, so a recovered primary does not keep showing
+	// history as an error.
+	WALArchiveFailure string `json:"wal_archive_failure"`
+	LeaseHeld         bool   `json:"lease_held"`
+	LastFailure       string `json:"last_failure"` // err + timestamp; empty if none
 	// LastRefreshed is when the poller last refreshed this snapshot, formatted
 	// as "<timestamp> (<age> ago)"; empty before the first poll. Rendered as a
 	// freshness note on the status page.
@@ -176,6 +181,10 @@ func buildBackupStatusView(snap backupengine.Snapshot) BackupStatusView {
 	if view.HasBackup {
 		view.LastBackupAt = snap.LastSuccessStop.Format(time.RFC3339)
 		view.LastBackupAge = formatAge(snap.LastSuccessStop)
+	}
+	if snap.ArchivingFailing {
+		view.WALArchiveFailure = fmt.Sprintf("%d failures, last %s (%s ago)",
+			snap.ArchiveFailedCount, snap.LastArchiveFailed.Format(time.RFC3339), formatAge(snap.LastArchiveFailed))
 	}
 	if snap.LastFailErr != "" {
 		view.LastFailure = fmt.Sprintf("%s (%s)", snap.LastFailErr, snap.LastFailAt.Format(time.RFC3339))

@@ -293,6 +293,57 @@ message StatusResponse {
   // without a separate ConsensusStatus RPC. This is the same data as the
   // ConsensusStatus RPC response but delivered in-band with the health stream.
   clustermetadata.ConsensusStatus consensus_status = 4;
+
+  // Backup health as observed by this pooler's backup-health poller
+  // (pgbackrest info, backup-related pg_settings and pg_stat_archiver).
+  // Refreshed on a fixed interval, so it lags the live state by up to one poll;
+  // last_refresh_time says how stale it is. Unset until the manager has
+  // started its backup engine.
+  BackupHealth backup_health = 5;
+}
+
+// BackupHealth is the pooler's passively derived view of whether backups and
+// WAL archiving are working. It is the same data the pooler exports as
+// pgbackrest.* metrics and renders on its status page.
+message BackupHealth {
+  // ready is true when a backup can run: repo reachable, stanza present,
+  // archiving configured and not failing, restore_command set.
+  bool ready = 1;
+  // reason is a bounded machine-readable explanation of ready, one of:
+  // "ok", "unknown", "disabled", "stanza_missing", "repo_unreachable",
+  // "archive_command_unset", "archive_mode_off", "restore_command_unset",
+  // "archiving_failing".
+  string reason = 2;
+
+  // Newest COMPLETE backup in the repo. Unset if there is none.
+  google.protobuf.Timestamp last_successful_backup_time = 3;
+  // Number of COMPLETE backups visible in the repo.
+  int64 complete_backup_count = 4;
+
+  // Consecutive Backup() failures on this pooler since its last success.
+  int64 failures_since_success = 5;
+  // Detail of the most recent Backup() failure on this pooler. Unset if none.
+  string last_failure_error = 6;
+  google.protobuf.Timestamp last_failure_time = 7;
+
+  // Set while a backup started by this pooler is running.
+  google.protobuf.Timestamp backup_in_progress_since = 8;
+  // Whether this pooler currently holds the shard's backup lease.
+  bool lease_held = 9;
+
+  // WAL archiving from pg_stat_archiver; populated only while this pooler is a
+  // primary (only the primary archives WAL), unset otherwise.
+  google.protobuf.Timestamp wal_last_archived_time = 10;
+  google.protobuf.Timestamp wal_last_archive_failed_time = 11;
+  // Cumulative archive failures since pg_stat_reset_shared('archiver'). This is
+  // history: use wal_archiving_failing for the current verdict.
+  int64 wal_archive_failed_count = 12;
+  // True when the most recent archive attempt failed. WAL is accumulating on
+  // the primary until archiving recovers; left unattended it fills the volume.
+  bool wal_archiving_failing = 13;
+
+  // When the poller last refreshed this data. Unset before the first poll.
+  google.protobuf.Timestamp last_refresh_time = 14;
 }
 
 // ManagerHealthStreamClientMessage is sent from the orchestrator to the pooler.

@@ -1179,6 +1179,17 @@ export class StatusResponse extends Message<StatusResponse> {
    */
   consensusStatus?: ConsensusStatus;
 
+  /**
+   * Backup health as observed by this pooler's backup-health poller
+   * (pgbackrest info, backup-related pg_settings and pg_stat_archiver).
+   * Refreshed on a fixed interval, so it lags the live state by up to one poll;
+   * last_refresh_time says how stale it is. Unset until the manager has
+   * started its backup engine.
+   *
+   * @generated from field: multipoolermanagerdata.BackupHealth backup_health = 5;
+   */
+  backupHealth?: BackupHealth;
+
   constructor(data?: PartialMessage<StatusResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1190,6 +1201,7 @@ export class StatusResponse extends Message<StatusResponse> {
     { no: 1, name: "status", kind: "message", T: Status },
     { no: 3, name: "availability_status", kind: "message", T: AvailabilityStatus },
     { no: 4, name: "consensus_status", kind: "message", T: ConsensusStatus },
+    { no: 5, name: "backup_health", kind: "message", T: BackupHealth },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StatusResponse {
@@ -1206,6 +1218,156 @@ export class StatusResponse extends Message<StatusResponse> {
 
   static equals(a: StatusResponse | PlainMessage<StatusResponse> | undefined, b: StatusResponse | PlainMessage<StatusResponse> | undefined): boolean {
     return proto3.util.equals(StatusResponse, a, b);
+  }
+}
+
+/**
+ * BackupHealth is the pooler's passively derived view of whether backups and
+ * WAL archiving are working. It is the same data the pooler exports as
+ * pgbackrest.* metrics and renders on its status page.
+ *
+ * @generated from message multipoolermanagerdata.BackupHealth
+ */
+export class BackupHealth extends Message<BackupHealth> {
+  /**
+   * ready is true when a backup can run: repo reachable, stanza present,
+   * archiving configured and not failing, restore_command set.
+   *
+   * @generated from field: bool ready = 1;
+   */
+  ready = false;
+
+  /**
+   * reason is a bounded machine-readable explanation of ready, one of:
+   * "ok", "unknown", "disabled", "stanza_missing", "repo_unreachable",
+   * "archive_command_unset", "archive_mode_off", "restore_command_unset",
+   * "archiving_failing".
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  /**
+   * Newest COMPLETE backup in the repo. Unset if there is none.
+   *
+   * @generated from field: google.protobuf.Timestamp last_successful_backup_time = 3;
+   */
+  lastSuccessfulBackupTime?: Timestamp;
+
+  /**
+   * Number of COMPLETE backups visible in the repo.
+   *
+   * @generated from field: int64 complete_backup_count = 4;
+   */
+  completeBackupCount = protoInt64.zero;
+
+  /**
+   * Consecutive Backup() failures on this pooler since its last success.
+   *
+   * @generated from field: int64 failures_since_success = 5;
+   */
+  failuresSinceSuccess = protoInt64.zero;
+
+  /**
+   * Detail of the most recent Backup() failure on this pooler. Unset if none.
+   *
+   * @generated from field: string last_failure_error = 6;
+   */
+  lastFailureError = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp last_failure_time = 7;
+   */
+  lastFailureTime?: Timestamp;
+
+  /**
+   * Set while a backup started by this pooler is running.
+   *
+   * @generated from field: google.protobuf.Timestamp backup_in_progress_since = 8;
+   */
+  backupInProgressSince?: Timestamp;
+
+  /**
+   * Whether this pooler currently holds the shard's backup lease.
+   *
+   * @generated from field: bool lease_held = 9;
+   */
+  leaseHeld = false;
+
+  /**
+   * WAL archiving from pg_stat_archiver; populated only while this pooler is a
+   * primary (only the primary archives WAL), unset otherwise.
+   *
+   * @generated from field: google.protobuf.Timestamp wal_last_archived_time = 10;
+   */
+  walLastArchivedTime?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp wal_last_archive_failed_time = 11;
+   */
+  walLastArchiveFailedTime?: Timestamp;
+
+  /**
+   * Cumulative archive failures since pg_stat_reset_shared('archiver'). This is
+   * history: use wal_archiving_failing for the current verdict.
+   *
+   * @generated from field: int64 wal_archive_failed_count = 12;
+   */
+  walArchiveFailedCount = protoInt64.zero;
+
+  /**
+   * True when the most recent archive attempt failed. WAL is accumulating on
+   * the primary until archiving recovers; left unattended it fills the volume.
+   *
+   * @generated from field: bool wal_archiving_failing = 13;
+   */
+  walArchivingFailing = false;
+
+  /**
+   * When the poller last refreshed this data. Unset before the first poll.
+   *
+   * @generated from field: google.protobuf.Timestamp last_refresh_time = 14;
+   */
+  lastRefreshTime?: Timestamp;
+
+  constructor(data?: PartialMessage<BackupHealth>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "multipoolermanagerdata.BackupHealth";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ready", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "last_successful_backup_time", kind: "message", T: Timestamp },
+    { no: 4, name: "complete_backup_count", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 5, name: "failures_since_success", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "last_failure_error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "last_failure_time", kind: "message", T: Timestamp },
+    { no: 8, name: "backup_in_progress_since", kind: "message", T: Timestamp },
+    { no: 9, name: "lease_held", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 10, name: "wal_last_archived_time", kind: "message", T: Timestamp },
+    { no: 11, name: "wal_last_archive_failed_time", kind: "message", T: Timestamp },
+    { no: 12, name: "wal_archive_failed_count", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 13, name: "wal_archiving_failing", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 14, name: "last_refresh_time", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BackupHealth {
+    return new BackupHealth().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BackupHealth {
+    return new BackupHealth().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BackupHealth {
+    return new BackupHealth().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BackupHealth | PlainMessage<BackupHealth> | undefined, b: BackupHealth | PlainMessage<BackupHealth> | undefined): boolean {
+    return proto3.util.equals(BackupHealth, a, b);
   }
 }
 
