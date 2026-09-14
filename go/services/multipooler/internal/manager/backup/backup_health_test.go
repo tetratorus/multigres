@@ -658,9 +658,12 @@ func TestRefreshArchiver_SerializesTransitionLogging(t *testing.T) {
 	<-secondProviderCalled
 	close(allowSecondProvider)
 
-	if e.archiverMu.TryLock() {
-		e.archiverMu.Unlock()
-		<-handler.secondAppended
+	// With apply+log serialized, the second refresh is blocked until the first
+	// transition finishes logging, so it must not have appended its record yet.
+	select {
+	case <-handler.secondAppended:
+		t.Fatal("second refresh logged its transition before the first one finished")
+	case <-time.After(100 * time.Millisecond):
 	}
 	close(handler.releaseFirst)
 
