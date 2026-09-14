@@ -59,19 +59,20 @@ type Status struct {
 // BackupStatusView is the formatted, template-ready view of the backup-health
 // snapshot. Durations are pre-formatted here (not in the template).
 type BackupStatusView struct {
-	HasBackup       bool   `json:"has_backup"`
-	LastBackupAt    string `json:"last_backup_at"`  // formatted; empty if none
-	LastBackupAge   string `json:"last_backup_age"` // e.g. "2h13m"; empty if none
-	CompleteCount   int64  `json:"complete_count"`
-	FailuresSince   int64  `json:"failures_since"`
-	InProgress      bool   `json:"in_progress"`
-	InProgressFor   string `json:"in_progress_for"`
-	Ready           bool   `json:"ready"`
-	ReadyReason     string `json:"ready_reason"`
-	WALArchiveLag   string `json:"wal_archive_lag"`  // empty when unknown / standby
-	ArchiveFailures string `json:"archive_failures"` // e.g. "3 (last 4m12s ago)"; empty when none
-	LeaseHeld       bool   `json:"lease_held"`
-	LastFailure     string `json:"last_failure"` // err + timestamp; empty if none
+	HasBackup        bool   `json:"has_backup"`
+	LastBackupAt     string `json:"last_backup_at"`  // formatted; empty if none
+	LastBackupAge    string `json:"last_backup_age"` // e.g. "2h13m"; empty if none
+	CompleteCount    int64  `json:"complete_count"`
+	FailuresSince    int64  `json:"failures_since"`
+	InProgress       bool   `json:"in_progress"`
+	InProgressFor    string `json:"in_progress_for"`
+	Ready            bool   `json:"ready"`
+	ReadyReason      string `json:"ready_reason"`
+	WALArchiveLag    string `json:"wal_archive_lag"`  // empty when unknown / standby
+	ArchiveFailures  string `json:"archive_failures"` // e.g. "3 (last 4m12s ago)"; empty when none
+	ArchivingFailing bool   `json:"archiving_failing"`
+	LeaseHeld        bool   `json:"lease_held"`
+	LastFailure      string `json:"last_failure"` // err + timestamp; empty if none
 	// LastRefreshed is when the poller last refreshed this snapshot, formatted
 	// as "<timestamp> (<age> ago)"; empty before the first poll. Rendered as a
 	// freshness note on the status page.
@@ -165,15 +166,16 @@ func (mp *Multipooler) backupStatusView() BackupStatusView {
 // directly unit-testable.
 func buildBackupStatusView(snap backupengine.Snapshot) BackupStatusView {
 	view := BackupStatusView{
-		HasBackup:     !snap.LastSuccessStop.IsZero(),
-		CompleteCount: snap.CompleteCount,
-		FailuresSince: snap.FailuresSinceSuccess,
-		InProgress:    !snap.InProgressStart.IsZero(),
-		InProgressFor: formatAge(snap.InProgressStart),
-		Ready:         snap.Ready,
-		ReadyReason:   snap.Reason,
-		WALArchiveLag: formatAge(snap.LastArchived),
-		LeaseHeld:     snap.LeaseHeld,
+		HasBackup:        !snap.LastSuccessStop.IsZero(),
+		CompleteCount:    snap.CompleteCount,
+		FailuresSince:    snap.FailuresSinceSuccess,
+		InProgress:       !snap.InProgressStart.IsZero(),
+		InProgressFor:    formatAge(snap.InProgressStart),
+		Ready:            snap.Ready,
+		ReadyReason:      snap.Reason,
+		WALArchiveLag:    formatAge(snap.LastArchived),
+		ArchivingFailing: snap.ArchivingFailing,
+		LeaseHeld:        snap.LeaseHeld,
 	}
 	if snap.ArchiveFailedCount > 0 {
 		view.ArchiveFailures = strconv.FormatInt(snap.ArchiveFailedCount, 10)

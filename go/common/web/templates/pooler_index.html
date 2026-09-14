@@ -109,7 +109,11 @@
             {{if .Backups.ArchiveFailures}}
             <tr>
               <th>WAL archive failures</th>
-              <td><span class="error">{{.Backups.ArchiveFailures}}</span></td>
+              <td>
+                {{if .Backups.ArchivingFailing}}<span class="error"
+                  >{{.Backups.ArchiveFailures}}</span
+                >{{else}}{{.Backups.ArchiveFailures}}{{end}}
+              </td>
             </tr>
             {{end}}
             <tr>
