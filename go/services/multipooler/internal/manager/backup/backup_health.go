@@ -70,8 +70,11 @@ type HealthTracker struct {
 	ready  bool
 	reason string // one of the ReadyReason* constants
 
-	// WAL archive lag (primary only; set from pg_stat_archiver).
-	lastArchived time.Time // zero if unknown / not primary
+	// WAL archive state (primary only; set from pg_stat_archiver).
+	lastArchived       time.Time // zero if unknown / not primary
+	lastArchiveFailed  time.Time // zero if never failed / not primary
+	archiveFailedCount int64     // cumulative failures since stats_reset
+	archivingFailing   bool
 
 	// Updated inline by the Backup() RPC.
 	failuresSinceSuccess int64
@@ -101,6 +104,9 @@ type Snapshot struct {
 	Ready                bool
 	Reason               string
 	LastArchived         time.Time // zero if unknown / not primary
+	LastArchiveFailed    time.Time // zero if never failed / not primary
+	ArchiveFailedCount   int64     // cumulative failures since stats_reset
+	ArchivingFailing     bool
 	FailuresSinceSuccess int64
 	InProgressStart      time.Time // zero when no backup running
 	LeaseHeld            bool
@@ -124,6 +130,9 @@ func (t *HealthTracker) Snapshot() Snapshot {
 		Ready:                t.ready,
 		Reason:               reason,
 		LastArchived:         t.lastArchived,
+		LastArchiveFailed:    t.lastArchiveFailed,
+		ArchiveFailedCount:   t.archiveFailedCount,
+		ArchivingFailing:     t.archivingFailing,
 		FailuresSinceSuccess: t.failuresSinceSuccess,
 		InProgressStart:      t.inProgressStart,
 		LeaseHeld:            t.leaseHeld,
@@ -149,11 +158,38 @@ func (t *HealthTracker) applyReadiness(ready bool, reason string) {
 	t.reason = reason
 }
 
-// applyArchiver stores the WAL archive state computed by the poller.
-func (t *HealthTracker) applyArchiver(lastArchived time.Time) {
+// applyArchiver stores the WAL archive state computed by the poller and reports
+// whether the archiving-failing state changed, so the poller can log the
+// transition once instead of on every tick.
+func (t *HealthTracker) applyArchiver(stats ArchiverStats, failing bool) (changed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.lastArchived = lastArchived
+	changed = t.archivingFailing != failing
+	t.lastArchived = stats.LastArchived
+	t.lastArchiveFailed = stats.LastFailed
+	t.archiveFailedCount = stats.FailedCount
+	t.archivingFailing = failing
+	return changed
+}
+
+// clearArchiver drops the WAL archive state on a node that does not archive
+// (standby). It clears the failing flag silently: a demotion is not an
+// archiving recovery.
+func (t *HealthTracker) clearArchiver() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastArchived = time.Time{}
+	t.lastArchiveFailed = time.Time{}
+	t.archiveFailedCount = 0
+	t.archivingFailing = false
+}
+
+// cachedArchivingFailing reports the cached failing state, used when pg_stat_archiver
+// cannot be read this tick.
+func (t *HealthTracker) cachedArchivingFailing() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.archivingFailing
 }
 
 // SetLeaseHeld records whether this pooler currently holds the backup lease.
@@ -427,24 +463,46 @@ func resolveReadiness(reachable bool, repoReason, configReason string, archiving
 // refreshArchiver refreshes the WAL archive lag gauge from pg_stat_archiver and
 // reports whether archiving is currently failing (the most recent archive
 // attempt failed). Only a primary archives WAL, so on a standby it clears the
-// cached value (the gauge stops emitting) and reports not-failing. This is a
-// passive, continuous signal — a cheap system-view read, no forced I/O.
+// cached value (the gauge stops emitting) and reports not-failing. If the
+// pg_stat_archiver read fails, the cached verdict is retained rather than
+// reporting healthy. This is a passive, continuous signal — a cheap
+// system-view read, no forced I/O.
 func (e *Engine) refreshArchiver(ctx context.Context, pgMode pgmode.Mode) (archivingFailing bool) {
 	if !pgMode.OutOfRecovery() {
-		e.health.applyArchiver(time.Time{})
+		e.health.clearArchiver()
 		return false
 	}
 
 	fn := e.archiverStatsProvider()
 	if fn == nil {
-		return false
+		return e.health.cachedArchivingFailing()
 	}
 	stats, err := fn(ctx)
 	if err != nil {
-		e.logger.DebugContext(ctx, "backup health: pg_stat_archiver query failed; keeping cached lag", "error", err)
-		return false
+		e.logger.DebugContext(ctx, "backup health: pg_stat_archiver query failed; keeping cached archive state", "error", err)
+		return e.health.cachedArchivingFailing()
 	}
 
-	e.health.applyArchiver(stats.LastArchived)
-	return stats.FailedCount > 0 && stats.LastFailed.After(stats.LastArchived)
+	failing := stats.FailedCount > 0 && stats.LastFailed.After(stats.LastArchived)
+	if e.health.applyArchiver(stats, failing) {
+		e.logArchiverTransition(ctx, stats, failing)
+	}
+	return failing
+}
+
+// logArchiverTransition logs the healthy<->failing edge once per transition.
+// WAL archiving failure is an operator-actionable, data-at-risk condition —
+// unarchived WAL accumulates in pg_wal and PITR coverage degrades — so it is
+// logged at warn, while the recovery edge is informational. pg_stat_archiver
+// carries no error text; the archive_command error is in the PostgreSQL log.
+func (e *Engine) logArchiverTransition(ctx context.Context, stats ArchiverStats, failing bool) {
+	if !failing {
+		e.logger.InfoContext(ctx, "WAL archiving recovered", "last_archived_time", stats.LastArchived)
+		return
+	}
+	e.logger.WarnContext(ctx, "WAL archiving is failing; unarchived WAL accumulates in pg_wal and PITR coverage is degrading",
+		"failed_count", stats.FailedCount,
+		"last_failed_time", stats.LastFailed,
+		"last_archived_time", stats.LastArchived,
+	)
 }

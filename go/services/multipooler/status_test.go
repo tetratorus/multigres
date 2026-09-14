@@ -37,12 +37,15 @@ func renderPoolerIndex(t *testing.T, status *Status) string {
 func TestBuildBackupStatusView_WithBackup(t *testing.T) {
 	stop := time.Now().Add(-2 * time.Hour)
 	failAt := time.Now().Add(-3 * time.Hour)
+	archiveFailed := time.Now().Add(-4 * time.Minute)
 	snap := backupengine.Snapshot{
 		LastSuccessStop:      stop,
 		CompleteCount:        5,
 		Ready:                true,
 		Reason:               backupengine.ReadyReasonOK,
 		LastArchived:         time.Now().Add(-15 * time.Second),
+		LastArchiveFailed:    archiveFailed,
+		ArchiveFailedCount:   3,
 		FailuresSinceSuccess: 2,
 		InProgressStart:      time.Now().Add(-30 * time.Second),
 		LeaseHeld:            true,
@@ -60,6 +63,8 @@ func TestBuildBackupStatusView_WithBackup(t *testing.T) {
 	assert.True(t, view.Ready)
 	assert.Equal(t, "ok", view.ReadyReason)
 	assert.NotEmpty(t, view.WALArchiveLag, "WAL lag should render when last-archived is set")
+	assert.Contains(t, view.ArchiveFailures, "3 (last ")
+	assert.Contains(t, view.ArchiveFailures, " ago)")
 	assert.True(t, view.InProgress)
 	assert.NotEmpty(t, view.InProgressFor)
 	assert.True(t, view.LeaseHeld)
@@ -78,6 +83,7 @@ func TestBuildBackupStatusView_NoBackup(t *testing.T) {
 	assert.False(t, view.InProgress)
 	assert.Empty(t, view.InProgressFor)
 	assert.Empty(t, view.WALArchiveLag, "no WAL lag when last-archived is zero (standby/unknown)")
+	assert.Empty(t, view.ArchiveFailures, "no WAL archive failures when archive failure count is zero")
 	assert.Empty(t, view.LastFailure)
 	assert.Equal(t, "stanza_missing", view.ReadyReason)
 }
@@ -106,23 +112,25 @@ func TestPoolerIndex_BackupsSection_NoBackup(t *testing.T) {
 	assert.Contains(t, html, "<h4>Backups</h4>")
 	assert.Contains(t, html, "never", "should show 'never' when there is no backup")
 	assert.Contains(t, html, "stanza_missing", "should show the not-ready reason")
+	assert.NotContains(t, html, "WAL archive failures")
 }
 
 func TestPoolerIndex_BackupsSection_WithBackup(t *testing.T) {
 	status := &Status{
 		Title: "pooler",
 		Backups: BackupStatusView{
-			HasBackup:     true,
-			LastBackupAt:  "2026-06-10T12:00:00Z",
-			LastBackupAge: "2h13m0s",
-			CompleteCount: 4,
-			FailuresSince: 1,
-			Ready:         true,
-			ReadyReason:   "ok",
-			WALArchiveLag: "15s",
-			LeaseHeld:     true,
-			LastFailure:   "boom (2026-06-10T11:00:00Z)",
-			LastRefreshed: "2026-06-10T14:00:00Z (12s ago)",
+			HasBackup:       true,
+			LastBackupAt:    "2026-06-10T12:00:00Z",
+			LastBackupAge:   "2h13m0s",
+			CompleteCount:   4,
+			FailuresSince:   1,
+			Ready:           true,
+			ReadyReason:     "ok",
+			WALArchiveLag:   "15s",
+			ArchiveFailures: "3 (last 4m12s ago)",
+			LeaseHeld:       true,
+			LastFailure:     "boom (2026-06-10T11:00:00Z)",
+			LastRefreshed:   "2026-06-10T14:00:00Z (12s ago)",
 		},
 	}
 	html := renderPoolerIndex(t, status)
@@ -130,6 +138,8 @@ func TestPoolerIndex_BackupsSection_WithBackup(t *testing.T) {
 	assert.Contains(t, html, "2026-06-10T12:00:00Z")
 	assert.Contains(t, html, "2h13m0s ago")
 	assert.Contains(t, html, "15s", "should show WAL archive lag")
+	assert.Contains(t, html, "WAL archive failures")
+	assert.Contains(t, html, "3 (last 4m12s ago)")
 	assert.Contains(t, html, "boom (2026-06-10T11:00:00Z)", "should show last failure")
 	assert.NotContains(t, html, "never")
 	assert.Contains(t, html, "Last refreshed 2026-06-10T14:00:00Z (12s ago)", "should show the last-refreshed note")
