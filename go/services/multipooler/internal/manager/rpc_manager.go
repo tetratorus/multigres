@@ -326,6 +326,7 @@ func (pm *MultipoolerManager) Status(ctx context.Context) (*multipoolermanagerda
 		PostgresRunning:  pm.isPostgresRunning(ctx),
 		PostgresStatus:   pm.getServerStatus(ctx),
 		ShardId:          pm.getShardID(),
+		MonitorReason:    pm.monitorReason(),
 	}
 
 	if action, duration := pm.actionLock.ActiveAction(); action != multipoolermanagerdatapb.PostgresAction_POSTGRES_ACTION_UNSPECIFIED {

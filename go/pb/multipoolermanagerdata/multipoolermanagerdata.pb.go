@@ -1248,8 +1248,16 @@ type Status struct {
 	// resumable.
 	FailoverSlotsReady int32 `protobuf:"varint,15,opt,name=failover_slots_ready,json=failoverSlotsReady,proto3" json:"failover_slots_ready,omitempty"`
 	FailoverSlotsTotal int32 `protobuf:"varint,16,opt,name=failover_slots_total,json=failoverSlotsTotal,proto3" json:"failover_slots_total,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// monitor_reason is why the pooler's postgres monitor is in its current
+	// state, as of its last tick. A bounded set: "postgres_running",
+	// "starting_postgres", "restoring_from_backup", "creating_first_backup",
+	// "waiting_for_first_backup_lease", "pgctld_unavailable". Empty before the
+	// first tick. Unlike postgres_action, which only covers actions the monitor
+	// is actively performing, this also explains why it is waiting (for example
+	// "waiting_for_first_backup_lease" or "pgctld_unavailable").
+	MonitorReason string `protobuf:"bytes,17,opt,name=monitor_reason,json=monitorReason,proto3" json:"monitor_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -1378,6 +1386,13 @@ func (x *Status) GetFailoverSlotsTotal() int32 {
 		return x.FailoverSlotsTotal
 	}
 	return 0
+}
+
+func (x *Status) GetMonitorReason() string {
+	if x != nil {
+		return x.MonitorReason
+	}
+	return ""
 }
 
 // Status gets unified status that works for both PRIMARY and REPLICA poolers
@@ -3218,7 +3233,7 @@ const file_multipoolermanagerdata_proto_rawDesc = "" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12D\n" +
 	"\x13connected_followers\x18\x03 \x03(\v2\x13.clustermetadata.IDR\x12connectedFollowers\x12s\n" +
 	"\x17sync_replication_config\x18\x04 \x01(\v2;.multipoolermanagerdata.SynchronousReplicationConfigurationR\x15syncReplicationConfig\x12&\n" +
-	"\x0fmax_wal_senders\x18\x05 \x01(\x05R\rmaxWalSenders\"\xb5\x06\n" +
+	"\x0fmax_wal_senders\x18\x05 \x01(\x05R\rmaxWalSenders\"\xdc\x06\n" +
 	"\x06Status\x12<\n" +
 	"\vpooler_type\x18\x01 \x01(\x0e2\x1b.clustermetadata.PoolerTypeR\n" +
 	"poolerType\x12L\n" +
@@ -3235,7 +3250,8 @@ const file_multipoolermanagerdata_proto_rawDesc = "" +
 	"\x18postgres_action_duration\x18\f \x01(\v2\x19.google.protobuf.DurationR\x16postgresActionDuration\x12%\n" +
 	"\x0epostgres_ready\x18\x0e \x01(\bR\rpostgresReady\x120\n" +
 	"\x14failover_slots_ready\x18\x0f \x01(\x05R\x12failoverSlotsReady\x120\n" +
-	"\x14failover_slots_total\x18\x10 \x01(\x05R\x12failoverSlotsTotal\"\x0f\n" +
+	"\x14failover_slots_total\x18\x10 \x01(\x05R\x12failoverSlotsTotal\x12%\n" +
+	"\x0emonitor_reason\x18\x11 \x01(\tR\rmonitorReason\"\x0f\n" +
 	"\rStatusRequest\"\xeb\x01\n" +
 	"\x0eStatusResponse\x126\n" +
 	"\x06status\x18\x01 \x01(\v2\x1e.multipoolermanagerdata.StatusR\x06status\x12T\n" +

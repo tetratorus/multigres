@@ -270,7 +270,7 @@ func (pm *MultipoolerManager) monitorPostgresIteration(ctx context.Context) (pos
 		// the monitor's log-dedup path behaves as before.
 		if !currentState.pgctldAvailable {
 			pm.logger.ErrorContext(ctx, "MonitorPostgres: pgctld unavailable", "error", err) //nolint:sloglint // message intentionally starts with an operation name or proper noun
-			pm.pgMonitorLastLoggedReason = reasonPgctldUnavailable
+			pm.storeMonitorReason(reasonPgctldUnavailable)
 		} else {
 			// TODO: If we have errors detecting postgres state for long enough, maybe try restarting postgres
 			// just in case? Could have been some kind of a fluke event like failing to create a socket file
@@ -316,7 +316,7 @@ func (pm *MultipoolerManager) monitorPostgresIteration(ctx context.Context) (pos
 	if err != nil {
 		if !currentState.pgctldAvailable {
 			pm.logger.ErrorContext(ctx, "MonitorPostgres: pgctld unavailable after lock acquire", "error", err) //nolint:sloglint // message intentionally starts with an operation name or proper noun
-			pm.pgMonitorLastLoggedReason = reasonPgctldUnavailable
+			pm.storeMonitorReason(reasonPgctldUnavailable)
 		} else {
 			pm.logger.ErrorContext(ctx, "MonitorPostgres: failed to re-discover state after lock acquire; skipping tick", "error", err) //nolint:sloglint // message intentionally starts with an operation name or proper noun
 		}
@@ -454,10 +454,24 @@ func (pm *MultipoolerManager) discoverPostgresState(ctx context.Context) (postgr
 // setMonitorReason sets the current monitor state reason and logs on state changes.
 // This avoids log spam during repeated monitor iterations with the same state.
 func (pm *MultipoolerManager) setMonitorReason(ctx context.Context, reason, message string) {
-	if pm.pgMonitorLastLoggedReason != reason {
+	if pm.monitorReason() != reason {
 		pm.logger.InfoContext(ctx, message)
-		pm.pgMonitorLastLoggedReason = reason
+		pm.storeMonitorReason(reason)
 	}
+}
+
+// storeMonitorReason records the monitor's current state reason without logging.
+func (pm *MultipoolerManager) storeMonitorReason(reason string) {
+	pm.pgMonitorReason.Store(&reason)
+}
+
+// monitorReason returns the monitor's current state reason, or "" before the
+// first monitor tick.
+func (pm *MultipoolerManager) monitorReason() string {
+	if r := pm.pgMonitorReason.Load(); r != nil {
+		return *r
+	}
+	return ""
 }
 
 // expectedPrimaryConnInfo assembles the primary_conninfo this pooler should

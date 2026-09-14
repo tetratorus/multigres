@@ -920,7 +920,7 @@ func TestTakeRemedialAction_PgctldUnavailable(t *testing.T) {
 	_ = pm.takeRemedialAction(lockCtx, remedialActionNone, postgresState{})
 
 	// Note: takeRemedialAction with remedialActionNone doesn't log
-	assert.Equal(t, "", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "", pm.monitorReason())
 }
 
 func TestTakeRemedialAction_PostgresReady(t *testing.T) {
@@ -943,7 +943,7 @@ func TestTakeRemedialAction_PostgresReady(t *testing.T) {
 	_ = pm.takeRemedialAction(lockCtx, remedialActionNone, postgresState{})
 
 	// Note: takeRemedialAction with remedialActionNone doesn't log
-	assert.Equal(t, "", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "", pm.monitorReason())
 }
 
 func TestTakeRemedialAction_StartPostgres(t *testing.T) {
@@ -965,7 +965,7 @@ func TestTakeRemedialAction_StartPostgres(t *testing.T) {
 	// Should attempt to start postgres
 	_ = pm.takeRemedialAction(lockCtx, remedialActionStartPostgres, postgresState{})
 
-	assert.Equal(t, "starting_postgres", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "starting_postgres", pm.monitorReason())
 	assert.True(t, mockPgctld.startCalled, "Should have called Start()")
 	assert.Equal(t, clustermetadatapb.PoolerType_REPLICA, pm.record.Type(), "writable route must be retracted before restart")
 }
@@ -979,7 +979,7 @@ func TestTakeRemedialAction_StartPostgresFails(t *testing.T) {
 
 	pm := newTestManager(t)
 	pm.pgctldClient = mockPgctld
-	pm.pgMonitorLastLoggedReason = "starting_postgres"
+	pm.storeMonitorReason("starting_postgres")
 
 	// Acquire lock before calling takeRemedialAction
 	lockCtx, err := pm.actionLock.Acquire(ctx, "test")
@@ -1061,7 +1061,7 @@ func TestTakeRemedialAction_WaitingForBackup(t *testing.T) {
 	_ = pm.takeRemedialAction(lockCtx, remedialActionNone, postgresState{})
 
 	// takeRemedialAction with None action doesn't modify last logged reason
-	assert.Equal(t, "", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "", pm.monitorReason())
 }
 
 func TestTakeRemedialAction_LogDeduplication(t *testing.T) {
@@ -1072,7 +1072,7 @@ func TestTakeRemedialAction_LogDeduplication(t *testing.T) {
 	// newTestManager defaults to a REPLICA record, which is what this test needs.
 	pm := newTestManager(t)
 	pm.pgctldClient = mockPgctld
-	pm.pgMonitorLastLoggedReason = "starting_postgres"
+	pm.storeMonitorReason("starting_postgres")
 
 	// Acquire lock before calling takeRemedialAction
 	lockCtx, err := pm.actionLock.Acquire(ctx, "test")
@@ -1081,17 +1081,17 @@ func TestTakeRemedialAction_LogDeduplication(t *testing.T) {
 
 	// Call multiple times with same action - reason should stay the same (log deduplication)
 	_ = pm.takeRemedialAction(lockCtx, remedialActionStartPostgres, postgresState{})
-	assert.Equal(t, "starting_postgres", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "starting_postgres", pm.monitorReason())
 
 	_ = pm.takeRemedialAction(lockCtx, remedialActionStartPostgres, postgresState{})
-	assert.Equal(t, "starting_postgres", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "starting_postgres", pm.monitorReason())
 
 	_ = pm.takeRemedialAction(lockCtx, remedialActionStartPostgres, postgresState{})
-	assert.Equal(t, "starting_postgres", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "starting_postgres", pm.monitorReason())
 
 	// Change action type - reason should change
 	_ = pm.takeRemedialAction(lockCtx, remedialActionRestoreFromBackup, postgresState{})
-	assert.Equal(t, "restoring_from_backup", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "restoring_from_backup", pm.monitorReason())
 }
 
 func TestTakeRemedialAction_ResignationSignal(t *testing.T) {
@@ -1227,7 +1227,7 @@ func TestTakeRemedialAction_ReconcileGUC(t *testing.T) {
 	_ = pm.takeRemedialAction(lockCtx, remedialActionReconcileGUC, postgresState{pgMode: pgmode.Primary})
 
 	assert.True(t, frs.reconcileGUCCalled, "ReconcileGUC should have been called")
-	assert.Equal(t, "postgres_running", pm.pgMonitorLastLoggedReason)
+	assert.Equal(t, "postgres_running", pm.monitorReason())
 }
 
 // setupManagerWithMockDBAndPgctld is setupManagerWithMockDB, but also returns

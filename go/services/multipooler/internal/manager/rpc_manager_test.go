@@ -502,6 +502,7 @@ func TestReplicationStatus(t *testing.T) {
 		assert.NotNil(t, status.Status.PrimaryStatus, "PrimaryStatus should be populated")
 		assert.Nil(t, status.Status.ReplicationStatus, "ReplicationStatus should be nil for PRIMARY")
 		assert.Equal(t, "0/12345678", status.Status.PrimaryStatus.Lsn)
+		assert.Equal(t, "postgres_running", status.Status.MonitorReason, "monitor reason should be exposed after the monitor tick")
 	})
 
 	t.Run("REPLICA_pooler_returns_replication_status", func(t *testing.T) {

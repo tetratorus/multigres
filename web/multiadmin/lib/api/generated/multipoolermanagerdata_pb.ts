@@ -1073,6 +1073,19 @@ export class Status extends Message<Status> {
    */
   failoverSlotsTotal = 0;
 
+  /**
+   * monitor_reason is why the pooler's postgres monitor is in its current
+   * state, as of its last tick. A bounded set: "postgres_running",
+   * "starting_postgres", "restoring_from_backup", "creating_first_backup",
+   * "waiting_for_first_backup_lease", "pgctld_unavailable". Empty before the
+   * first tick. Unlike postgres_action, which only covers actions the monitor
+   * is actively performing, this also explains why it is waiting (for example
+   * "waiting_for_first_backup_lease" or "pgctld_unavailable").
+   *
+   * @generated from field: string monitor_reason = 17;
+   */
+  monitorReason = "";
+
   constructor(data?: PartialMessage<Status>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1095,6 +1108,7 @@ export class Status extends Message<Status> {
     { no: 14, name: "postgres_ready", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 15, name: "failover_slots_ready", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 16, name: "failover_slots_total", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 17, name: "monitor_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Status {

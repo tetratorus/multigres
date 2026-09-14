@@ -195,8 +195,11 @@ type MultipoolerManager struct {
 	// use the default net.Dialer.
 	leaderReachableFn func(host string, port int32) bool
 
-	// pgMonitorLastLoggedReason tracks the last logged reason in the monitor to avoid duplicate logs.
-	pgMonitorLastLoggedReason string
+	// pgMonitorReason is the monitor's current state reason (one of the
+	// reason* constants in postgres_monitor.go). The monitor goroutine writes it
+	// to dedupe its logs; Status reads it concurrently to report why the monitor
+	// is (not) acting. nil until the first monitor tick sets a reason.
+	pgMonitorReason atomic.Pointer[string]
 
 	// Unrecoverable-postgres (FATAL-loop) classifier state. All fields are touched
 	// only from the single-goroutine monitor iteration (monitorPostgresIteration

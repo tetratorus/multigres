@@ -242,6 +242,15 @@ message Status {
   // resumable.
   int32 failover_slots_ready = 15;
   int32 failover_slots_total = 16;
+
+  // monitor_reason is why the pooler's postgres monitor is in its current
+  // state, as of its last tick. A bounded set: "postgres_running",
+  // "starting_postgres", "restoring_from_backup", "creating_first_backup",
+  // "waiting_for_first_backup_lease", "pgctld_unavailable". Empty before the
+  // first tick. Unlike postgres_action, which only covers actions the monitor
+  // is actively performing, this also explains why it is waiting (for example
+  // "waiting_for_first_backup_lease" or "pgctld_unavailable").
+  string monitor_reason = 17;
 }
 
 // PostgresStatus is the observed state of the PostgreSQL server process.
