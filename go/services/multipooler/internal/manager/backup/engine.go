@@ -103,6 +103,10 @@ type Engine struct {
 	id       Identity
 	settings Settings
 
+	// archiverMu serializes applying archive stats with its transition log so
+	// concurrent refreshes cannot emit logs out of order.
+	archiverMu sync.Mutex
+
 	// mu guards the config resolved at runtime: the pgbackrest.conf path and
 	// pgpass file (resolved when topology loads), the repo config (resolved
 	// at DB-open), and the role provider. All may be re-set on reopen.

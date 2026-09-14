@@ -484,9 +484,11 @@ func (e *Engine) refreshArchiver(ctx context.Context, pgMode pgmode.Mode) (archi
 	}
 
 	failing := stats.FailedCount > 0 && stats.LastFailed.After(stats.LastArchived)
+	e.archiverMu.Lock()
 	if e.health.applyArchiver(stats, failing) {
 		e.logArchiverTransition(ctx, stats, failing)
 	}
+	e.archiverMu.Unlock()
 	return failing
 }
 

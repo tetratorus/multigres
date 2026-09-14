@@ -20,6 +20,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,43 @@ import (
 
 	"github.com/multigres/multigres/go/services/multipooler/internal/pgmode"
 )
+
+type blockingSlogHandler struct {
+	mu           sync.Mutex
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	records      []slog.Record
+}
+
+func (h *blockingSlogHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *blockingSlogHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	first := len(h.records) == 0
+	h.records = append(h.records, record.Clone())
+	h.mu.Unlock()
+	if first {
+		close(h.firstEntered)
+		<-h.releaseFirst
+	}
+	return nil
+}
+
+func (h *blockingSlogHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *blockingSlogHandler) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h *blockingSlogHandler) Records() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]slog.Record(nil), h.records...)
+}
 
 func TestBackupTracker_SetLeaseHeld(t *testing.T) {
 	tr := NewHealthTracker()
@@ -567,4 +605,64 @@ func TestRefreshArchiver_LogsTransitionOnce(t *testing.T) {
 	assert.False(t, e.refreshArchiver(t.Context(), pgmode.Primary))
 	assert.Equal(t, 1, strings.Count(logs.String(), `"level":"INFO"`))
 	assert.Contains(t, logs.String(), "WAL archiving recovered")
+}
+
+func TestRefreshArchiver_SerializesTransitionLogging(t *testing.T) {
+	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
+	handler := &blockingSlogHandler{
+		firstEntered: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	e.logger = slog.New(handler)
+
+	archived := time.Unix(1735984000, 0)
+	failed := time.Unix(1735984900, 0)
+	var providerMu sync.Mutex
+	providerCalls := 0
+	secondProviderCalled := make(chan struct{})
+	allowSecondProvider := make(chan struct{})
+	e.SetArchiverStatsProvider(func(context.Context) (ArchiverStats, error) {
+		providerMu.Lock()
+		providerCalls++
+		call := providerCalls
+		providerMu.Unlock()
+		if call == 1 {
+			return ArchiverStats{LastArchived: archived, LastFailed: failed, FailedCount: 3}, nil
+		}
+		close(secondProviderCalled)
+		<-allowSecondProvider
+		return ArchiverStats{LastArchived: failed, LastFailed: failed, FailedCount: 3}, nil
+	})
+
+	firstDone := make(chan struct{})
+	go func() {
+		e.refreshArchiver(t.Context(), pgmode.Primary)
+		close(firstDone)
+	}()
+	<-handler.firstEntered
+
+	secondDone := make(chan struct{})
+	go func() {
+		e.refreshArchiver(t.Context(), pgmode.Primary)
+		close(secondDone)
+	}()
+	<-secondProviderCalled
+	close(allowSecondProvider)
+
+	select {
+	case <-secondDone:
+		t.Fatal("second refresh logged before the first transition completed")
+	default:
+	}
+
+	close(handler.releaseFirst)
+	<-firstDone
+	<-secondDone
+
+	records := handler.Records()
+	require.Len(t, records, 2)
+	assert.Equal(t, slog.LevelWarn, records[0].Level)
+	assert.Equal(t, slog.LevelInfo, records[1].Level)
+	assert.Equal(t, "WAL archiving recovered", records[1].Message)
+	assert.False(t, e.Health().Snapshot().ArchivingFailing)
 }
