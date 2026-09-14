@@ -121,7 +121,8 @@ required` with `problem_code`, shard identity and `description`
 The `ShardStuck` description names the leader cause, the exact shortfall
 (`majority not satisfied: recruited 1 of 3 …` or `revocation not satisfied:
 … could independently satisfy AT_LEAST_2`), and the **unrecruitable cohort
-members**. Work from that list:
+members** (the outgoing leader is tagged `(leader)`; it still counts toward the
+majority). Work from that list:
 
 1. **Prefer restoring members.** If any listed pooler can be brought back
    (restart the pooler or its Postgres, fix the network partition, un-drain

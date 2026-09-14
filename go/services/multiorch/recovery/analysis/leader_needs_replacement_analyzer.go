@@ -279,21 +279,13 @@ func (a *LeaderNeedsReplacementAnalyzer) Analyze(sa *ShardAnalysis) ([]types.Pro
 // otherwise fire forever. The distinguisher: recovery is infeasible now but WOULD
 // be feasible if every cohort member were reachable, i.e. standbys are missing.
 func (a *LeaderNeedsReplacementAnalyzer) atRiskProblemIfDegraded(sa *ShardAnalysis, policy commonconsensus.DurabilityPolicy, cohort []*clustermetadatapb.ID, leaderID *clustermetadatapb.ID) []types.Problem {
-	recoverableIfLeaderLost := recruitmentFeasible(policy, cohort, recruitableCohort(sa, cohort, leaderID))
-	recoverableIfFullyReachable := recruitmentFeasible(policy, cohort, cohortWithout(cohort, leaderID))
+	recoverableIfLeaderLost := commonconsensus.CheckSufficientRecruitment(policy, cohort, recruitableCohort(sa, cohort, leaderID)) == nil
+	recoverableIfFullyReachable := commonconsensus.CheckSufficientRecruitment(policy, cohort, cohortWithout(cohort, leaderID)) == nil
 	if !recoverableIfLeaderLost && recoverableIfFullyReachable {
 		return a.atRiskProblem(sa, leaderID,
 			fmt.Sprintf("Shard %s could not recover if its leader were lost: cohort members are unreachable", sa.ShardKey))
 	}
 	return nil
-}
-
-// recruitmentFeasible reports whether a failover could establish a new term from
-// the reachable subset: a strict majority of the outgoing cohort reachable, with
-// the unreachable remainder unable to satisfy the durability policy. Thin
-// readable wrapper over CheckSufficientRecruitment's error return.
-func recruitmentFeasible(policy commonconsensus.DurabilityPolicy, cohort, reachable []*clustermetadatapb.ID) bool {
-	return commonconsensus.CheckSufficientRecruitment(policy, cohort, reachable) == nil
 }
 
 // emitFailover applies the feasibility gate to a leader that must be replaced. A
@@ -314,7 +306,7 @@ func (a *LeaderNeedsReplacementAnalyzer) emitFailover(sa *ShardAnalysis, leaderI
 	recruitable := recruitableCohort(sa, cohort, nil)
 	if err := commonconsensus.CheckSufficientRecruitment(policy, cohort, recruitable); err != nil {
 		return a.blindOrStuck(sa, leaderID, cohort,
-			stuckDescription(sa, cohort, recruitable, fmt.Sprintf("needs a new leader (%s)", cause), err))
+			stuckDescription(sa, leaderID, cohort, recruitable, fmt.Sprintf("needs a new leader (%s)", cause), err))
 	}
 	return a.shardProblem(sa, leaderID, cause, types.PriorityEmergency, a.factory.NewAppointLeaderAction(), description)
 }
@@ -337,24 +329,25 @@ func (a *LeaderNeedsReplacementAnalyzer) emitInconclusive(sa *ShardAnalysis, lea
 			fmt.Sprintf("Shard %s leader health is unknown: orch cannot confirm it is serving a quorum nor that its cohort is cut off from it", sa.ShardKey))
 	}
 	return a.blindOrStuck(sa, leaderID, cohort,
-		stuckDescription(sa, cohort, recruitable, "cannot confirm leader progress", err))
+		stuckDescription(sa, leaderID, cohort, recruitable, "cannot confirm leader progress", err))
 }
 
 // stuckDescription renders the ShardStuck alert so an operator can act on it
 // without reading orch source: what is wrong with the leader, which safety
 // invariant blocks automatic failover (the CheckSufficientRecruitment error names
 // the majority/revocation shortfall), which outgoing-cohort members orch cannot
-// recruit, and the two safe ways out — restore those members so orch recovers on
-// its own, or force the failover via the externally-certified rule-change path.
-// Orch deliberately never picks the second option itself: only an operator or
-// provisioner can attest that the unrecruitable members will not commit further
-// writes under the outgoing rule.
-func stuckDescription(sa *ShardAnalysis, cohort, recruitable []*clustermetadatapb.ID, leaderState string, gate error) string {
+// recruit (the leader is tagged: it is both the reason for the failover and a
+// cohort vote, so it stays in the count), and the two safe ways out — restore
+// those members so orch recovers on its own, or force the failover via the
+// externally-certified rule-change path. Orch deliberately never picks the second
+// option itself: only an operator or provisioner can attest that the
+// unrecruitable members will not commit further writes under the outgoing rule.
+func stuckDescription(sa *ShardAnalysis, leaderID *clustermetadatapb.ID, cohort, recruitable []*clustermetadatapb.ID, leaderState string, gate error) string {
 	return fmt.Sprintf(
 		"Shard %s %s but automatic failover is unsafe (%v); unrecruitable cohort members: %s. "+
 			"Restore those poolers to let orch recover automatically, or if they are permanently lost, "+
 			"force the failover with `multigres cluster apply-rule-change` (see docs/ha/rule-change.md)",
-		sa.ShardKey, leaderState, gate, formatCohortIDs(unrecruitableCohort(cohort, recruitable)))
+		sa.ShardKey, leaderState, gate, formatCohortIDs(unrecruitableCohort(cohort, recruitable), leaderID))
 }
 
 // unrecruitableCohort returns the cohort members not present in recruitable.
@@ -373,11 +366,16 @@ func unrecruitableCohort(cohort, recruitable []*clustermetadatapb.ID) []*cluster
 }
 
 // formatCohortIDs renders IDs as a bracketed, comma-separated list of
-// cluster-unique pooler keys (e.g. "[cell1_pooler-1, cell1_pooler-2]").
-func formatCohortIDs(ids []*clustermetadatapb.ID) string {
+// cluster-unique pooler keys, tagging the leader (e.g.
+// "[cell1_pooler-1 (leader), cell1_pooler-2]").
+func formatCohortIDs(ids []*clustermetadatapb.ID, leaderID *clustermetadatapb.ID) string {
+	leaderKey := topoclient.ComponentIDString(leaderID)
 	keys := make([]string, len(ids))
 	for i, id := range ids {
 		keys[i] = topoclient.ClusterIDString(id)
+		if topoclient.ComponentIDString(id) == leaderKey {
+			keys[i] += " (leader)"
+		}
 	}
 	return "[" + strings.Join(keys, ", ") + "]"
 }

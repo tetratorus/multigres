@@ -387,7 +387,7 @@ func TestLeaderNeedsReplacementAnalyzer_Analyze(t *testing.T) {
 		desc := problems[0].Description
 		require.Contains(t, desc, "needs a new leader (LeaderUnhealthy)")
 		require.Contains(t, desc, "majority not satisfied: recruited 0 of 3 cohort poolers, need at least 2")
-		require.Contains(t, desc, "unrecruitable cohort members: [zone1_leader-1, zone1_follower-1, zone1_follower-2]")
+		require.Contains(t, desc, "unrecruitable cohort members: [zone1_leader-1 (leader), zone1_follower-1, zone1_follower-2]")
 		require.Contains(t, desc, "multigres cluster apply-rule-change")
 	})
 
