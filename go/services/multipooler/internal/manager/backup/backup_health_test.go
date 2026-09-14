@@ -31,10 +31,12 @@ import (
 )
 
 type blockingSlogHandler struct {
-	mu           sync.Mutex
-	firstEntered chan struct{}
-	releaseFirst chan struct{}
-	records      []slog.Record
+	mu             sync.Mutex
+	firstEntered   chan struct{}
+	releaseFirst   chan struct{}
+	secondAppended chan struct{}
+	firstHandled   bool
+	records        []slog.Record
 }
 
 func (h *blockingSlogHandler) Enabled(context.Context, slog.Level) bool {
@@ -43,12 +45,18 @@ func (h *blockingSlogHandler) Enabled(context.Context, slog.Level) bool {
 
 func (h *blockingSlogHandler) Handle(_ context.Context, record slog.Record) error {
 	h.mu.Lock()
-	first := len(h.records) == 0
-	h.records = append(h.records, record.Clone())
+	first := !h.firstHandled
+	h.firstHandled = true
 	h.mu.Unlock()
 	if first {
 		close(h.firstEntered)
 		<-h.releaseFirst
+	}
+	h.mu.Lock()
+	h.records = append(h.records, record.Clone())
+	h.mu.Unlock()
+	if !first {
+		close(h.secondAppended)
 	}
 	return nil
 }
@@ -610,8 +618,9 @@ func TestRefreshArchiver_LogsTransitionOnce(t *testing.T) {
 func TestRefreshArchiver_SerializesTransitionLogging(t *testing.T) {
 	e, _ := newTestEngine(t, t.TempDir(), "tg1", "0", "/tmp/backups")
 	handler := &blockingSlogHandler{
-		firstEntered: make(chan struct{}),
-		releaseFirst: make(chan struct{}),
+		firstEntered:   make(chan struct{}),
+		releaseFirst:   make(chan struct{}),
+		secondAppended: make(chan struct{}),
 	}
 	e.logger = slog.New(handler)
 
@@ -649,13 +658,12 @@ func TestRefreshArchiver_SerializesTransitionLogging(t *testing.T) {
 	<-secondProviderCalled
 	close(allowSecondProvider)
 
-	select {
-	case <-secondDone:
-		t.Fatal("second refresh logged before the first transition completed")
-	default:
+	if e.archiverMu.TryLock() {
+		e.archiverMu.Unlock()
+		<-handler.secondAppended
 	}
-
 	close(handler.releaseFirst)
+
 	<-firstDone
 	<-secondDone
 
