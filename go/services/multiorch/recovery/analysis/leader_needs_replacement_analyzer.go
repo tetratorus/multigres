@@ -17,6 +17,7 @@ package analysis
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	commonconsensus "github.com/multigres/multigres/go/common/consensus"
@@ -310,9 +311,10 @@ func recruitmentFeasible(policy commonconsensus.DurabilityPolicy, cohort, reacha
 // leader is not excluded from the reachable set — even an unhealthy-but-reachable
 // leader can still participate in the recruit that establishes the new term.
 func (a *LeaderNeedsReplacementAnalyzer) emitFailover(sa *ShardAnalysis, leaderID *clustermetadatapb.ID, policy commonconsensus.DurabilityPolicy, cohort []*clustermetadatapb.ID, cause types.ProblemCode, description string) []types.Problem {
-	if !recruitmentFeasible(policy, cohort, recruitableCohort(sa, cohort, nil)) {
+	recruitable := recruitableCohort(sa, cohort, nil)
+	if err := commonconsensus.CheckSufficientRecruitment(policy, cohort, recruitable); err != nil {
 		return a.blindOrStuck(sa, leaderID, cohort,
-			fmt.Sprintf("Shard %s needs a new leader (%s) but cannot reach a sufficient recruitment quorum", sa.ShardKey, cause))
+			stuckDescription(sa, cohort, recruitable, fmt.Sprintf("needs a new leader (%s)", cause), err))
 	}
 	return a.shardProblem(sa, leaderID, cause, types.PriorityEmergency, a.factory.NewAppointLeaderAction(), description)
 }
@@ -328,12 +330,56 @@ func (a *LeaderNeedsReplacementAnalyzer) emitFailover(sa *ShardAnalysis, leaderI
 // TODO(propagation): the progress axis will further split LeaderHealthUnknown into
 // ShardWritesBlockedOnPropagation when a quorum is catching up but not yet current.
 func (a *LeaderNeedsReplacementAnalyzer) emitInconclusive(sa *ShardAnalysis, leaderID *clustermetadatapb.ID, policy commonconsensus.DurabilityPolicy, cohort []*clustermetadatapb.ID) []types.Problem {
-	if recruitmentFeasible(policy, cohort, recruitableCohort(sa, cohort, nil)) {
+	recruitable := recruitableCohort(sa, cohort, nil)
+	err := commonconsensus.CheckSufficientRecruitment(policy, cohort, recruitable)
+	if err == nil {
 		return a.shardProblem(sa, leaderID, types.ProblemLeaderHealthUnknown, types.PriorityNormal, a.factory.NewAlertOnlyAction(),
 			fmt.Sprintf("Shard %s leader health is unknown: orch cannot confirm it is serving a quorum nor that its cohort is cut off from it", sa.ShardKey))
 	}
 	return a.blindOrStuck(sa, leaderID, cohort,
-		fmt.Sprintf("Shard %s cannot confirm leader progress and cannot reach a sufficient recruitment quorum", sa.ShardKey))
+		stuckDescription(sa, cohort, recruitable, "cannot confirm leader progress", err))
+}
+
+// stuckDescription renders the ShardStuck alert so an operator can act on it
+// without reading orch source: what is wrong with the leader, which safety
+// invariant blocks automatic failover (the CheckSufficientRecruitment error names
+// the majority/revocation shortfall), which outgoing-cohort members orch cannot
+// recruit, and the two safe ways out — restore those members so orch recovers on
+// its own, or force the failover via the externally-certified rule-change path.
+// Orch deliberately never picks the second option itself: only an operator or
+// provisioner can attest that the unrecruitable members will not commit further
+// writes under the outgoing rule.
+func stuckDescription(sa *ShardAnalysis, cohort, recruitable []*clustermetadatapb.ID, leaderState string, gate error) string {
+	return fmt.Sprintf(
+		"Shard %s %s but automatic failover is unsafe (%v); unrecruitable cohort members: %s. "+
+			"Restore those poolers to let orch recover automatically, or if they are permanently lost, "+
+			"force the failover with `multigres cluster apply-rule-change` (see docs/ha/rule-change.md)",
+		sa.ShardKey, leaderState, gate, formatCohortIDs(unrecruitableCohort(cohort, recruitable)))
+}
+
+// unrecruitableCohort returns the cohort members not present in recruitable.
+func unrecruitableCohort(cohort, recruitable []*clustermetadatapb.ID) []*clustermetadatapb.ID {
+	recruitableKeys := make(map[topoclient.ComponentID]struct{}, len(recruitable))
+	for _, r := range recruitable {
+		recruitableKeys[topoclient.ComponentIDString(r)] = struct{}{}
+	}
+	out := make([]*clustermetadatapb.ID, 0, len(cohort))
+	for _, m := range cohort {
+		if _, ok := recruitableKeys[topoclient.ComponentIDString(m)]; !ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// formatCohortIDs renders IDs as a bracketed, comma-separated list of
+// cluster-unique pooler keys (e.g. "[cell1_pooler-1, cell1_pooler-2]").
+func formatCohortIDs(ids []*clustermetadatapb.ID) string {
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = topoclient.ClusterIDString(id)
+	}
+	return "[" + strings.Join(keys, ", ") + "]"
 }
 
 // blindOrStuck returns the alert-only problem for an infeasible failover: no usable

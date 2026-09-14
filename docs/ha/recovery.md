@@ -87,6 +87,73 @@ for the boundary and its consequences.
 > `LeadershipSignal` (ACTIVE, REQUESTING_DEMOTION) and `CohortEligibilityStatus`.
 > This is the signaling layer the state model defers to recovery.
 
+## When automatic failover is unsafe
+
+Multiorch only fails over when it can prove the outgoing rule is revoked
+(`CheckSufficientRecruitment` in
+[`durability.go`](../../go/common/consensus/durability.go)): a strict
+majority of the outgoing cohort must be recruitable, and the unrecruitable
+remainder must be unable to satisfy the durability policy on its own. If the
+proof is not available, proceeding could commit a new term while a partitioned
+old leader keeps accepting durable writes — split brain, and eventually data
+loss. Multiorch refuses instead, and reports one of these alert-only problem
+codes ([`types.go`](../../go/services/multiorch/recovery/types/types.go)):
+
+| Problem code             | Meaning                                                                                                                                           | Who acts                                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `ShardStuck`             | The leader must be replaced, but the recruitable subset of the cohort is not a sufficient recruitment quorum. Writes are halted.                  | **Operator / provisioner.** Automatic recovery resumes only if enough cohort members become recruitable again. |
+| `NoHealthyCohortMembers` | No initialized pooler has a fresh, valid health report; Multiorch is blind and will not convict the leader on stale evidence.                     | Usually transient (cold start, health-stream outage). Investigate connectivity from Multiorch to the poolers. |
+| `LeaderHealthUnknown`    | The leader can neither be confirmed healthy nor convicted, but a recruitment quorum exists. Nothing is blocked yet.                              | Watch; investigate if persistent.                                                                           |
+| `ShardAtRisk`            | The leader is healthy, but if it were lost the remaining cohort could not recover. Not an outage — a warning that the next failure will be one.  | Restore or add cohort members before the leader fails.                                                      |
+
+All four are surfaced the same way:
+
+- a `WARN` log line `non-actionable problem detected; human intervention
+  required` with `problem_code`, shard identity and `description`
+  ([`alert_only.go`](../../go/services/multiorch/recovery/actions/alert_only.go));
+- the `multiorch.recovery.detected_problems` gauge, whose `problem_code`
+  attribute is the dimension to page on — `analysis_type` alone is not enough,
+  because the same analyzer (`LeaderNeedsReplacement`) also emits the
+  actionable, self-healing codes.
+
+### Responding to `ShardStuck`
+
+The `ShardStuck` description names the leader cause, the exact shortfall
+(`majority not satisfied: recruited 1 of 3 …` or `revocation not satisfied:
+… could independently satisfy AT_LEAST_2`), and the **unrecruitable cohort
+members**. Work from that list:
+
+1. **Prefer restoring members.** If any listed pooler can be brought back
+   (restart the pooler or its Postgres, fix the network partition, un-drain
+   it), do that first. As soon as the recruitable subset is sufficient,
+   Multiorch fails over on its own with the normal, proof-backed protocol.
+   Nothing else is required.
+2. **Only if members are permanently lost**, force the failover with an
+   externally certified revocation:
+
+   ```bash
+   multigres cluster apply-rule-change \
+     --database=<db> --table-group=<tg> --shard=<shard> \
+     --leader=<cell_name> --cohort=<cell_name>,... --durability=AT_LEAST_2 \
+     --outgoing-rule-term=<term> --outgoing-leader-subterm=<subterm> \
+     --frozen-lsn=<lsn> \
+     --reason="<why the lost members cannot come back>"
+   ```
+
+   Before running it, make sure the lost members really cannot accept
+   writes again (destroyed, fenced, or their Postgres stopped). The
+   `--frozen-lsn` you pass is your attestation that no outgoing-cohort member
+   will commit past it; the command confirms the shard name interactively
+   because that attestation, if wrong, means data loss. Use
+   `--unsafe-derive-cert-from-reachable` only when you accept that the lost
+   members may have held writes the survivors never saw. The safety argument
+   and flags are explained in
+   [Operator override](rule-change.md#operator-override-forced-failover-after-a-quorum-is-permanently-lost).
+
+Do not try to shortcut either path by editing rule state directly or
+restarting Multiorch: the refusal is the safety property working as intended,
+not a stuck process.
+
 ## Scenarios
 
 > [!NOTE]
