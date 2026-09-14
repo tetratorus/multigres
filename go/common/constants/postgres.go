@@ -106,6 +106,13 @@ const (
 	// backups.
 	BootstrapSentinelFile = ".multigres-bootstrap-in-progress"
 
+	// RestoreSentinelFile marks an in-progress restore from backup. Written
+	// before pgBackRest restore and removed once the restored PGDATA is complete;
+	// its presence with postgres down means the on-disk pg_data is a torn
+	// restore and must be removed before retrying. Lives in pooler_dir (not
+	// PGDATA) so it stays out of pgBackRest backups.
+	RestoreSentinelFile = ".multigres-restore-in-progress"
+
 	// RewindSentinelFile marks an in-progress pg_rewind. Written before the actual
 	// (mutating) pg_rewind runs and removed only after postgres is verified back up
 	// as a standby; its presence on startup means a prior rewind was interrupted

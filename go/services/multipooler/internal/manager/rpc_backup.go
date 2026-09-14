@@ -265,7 +265,9 @@ func (pm *MultipoolerManager) GetPrimaryAsPg2Args(
 }
 
 // restoreFromBackupLocked restores from a backup to a standby without a data
-// directory. Caller must hold the action lock.
+// directory. A restore sentinel brackets the destructive restore and archive
+// reconfiguration steps so a failed attempt cleans up its torn PGDATA before
+// retrying. Caller must hold the action lock.
 //
 // Requirements:
 // - The pooler must be a standby (not a primary)
@@ -325,10 +327,28 @@ func (pm *MultipoolerManager) restoreFromBackupLocked(ctx context.Context, backu
 			"cannot restore: PGDATA already exists; caller must stop PostgreSQL and remove PGDATA first")
 	}
 
+	if err := pm.writeRestoreSentinel(); err != nil {
+		return mterrors.Wrap(err, "failed to write restore sentinel")
+	}
+
+	cleanupTornRestore := func() error {
+		if err := pm.removeDataDirectory(); err != nil {
+			pm.logger.WarnContext(ctx, "failed to remove data directory during restore cleanup", "error", err)
+			return mterrors.Wrap(err, "failed to remove data directory during restore cleanup")
+		}
+		if err := pm.removeRestoreSentinel(); err != nil {
+			return mterrors.Wrap(err, "failed to remove restore sentinel during restore cleanup")
+		}
+		return nil
+	}
+
 	// Restore the backup
 	if err := telemetry.WithSpan(ctx, "restore/pgbackrest", func(ctx context.Context) error {
 		return pm.backup.Restore(ctx, backupID, pm.record.PoolerDir())
 	}); err != nil {
+		if cleanupErr := cleanupTornRestore(); cleanupErr != nil {
+			return errors.Join(err, cleanupErr)
+		}
 		return err
 	}
 
@@ -342,7 +362,14 @@ func (pm *MultipoolerManager) restoreFromBackupLocked(ctx context.Context, backu
 		}
 		return mterrors.Wrap(pm.backup.ConfigureArchiveMode(ctx), "failed to configure archive mode")
 	}); err != nil {
+		if cleanupErr := cleanupTornRestore(); cleanupErr != nil {
+			return errors.Join(err, cleanupErr)
+		}
 		return err
+	}
+
+	if err := pm.removeRestoreSentinel(); err != nil {
+		return mterrors.Wrap(err, "failed to remove restore sentinel")
 	}
 
 	if err := telemetry.WithSpan(ctx, "restore/start-postgres", func(ctx context.Context) error {

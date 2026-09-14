@@ -231,6 +231,22 @@ func TestDiscoverPostgresState_BootstrapSentinelPresent(t *testing.T) {
 	assert.True(t, state.bootstrapSentinelPresent)
 }
 
+func TestDiscoverPostgresState_RestoreSentinelPresent(t *testing.T) {
+	ctx := t.Context()
+
+	pm := NewTestMultipoolerManager(t)
+	pm.pgctldClient = &mockPgctldClient{
+		statusResponse: &pgctldpb.StatusResponse{Status: pgctldpb.ServerStatus_STOPPED},
+	}
+
+	sentinelPath := filepath.Join(pm.record.PoolerDir(), constants.RestoreSentinelFile)
+	require.NoError(t, os.WriteFile(sentinelPath, []byte("prior attempt\n"), 0o644))
+
+	state, err := pm.discoverPostgresState(ctx)
+	require.NoError(t, err)
+	assert.True(t, state.restoreSentinelPresent)
+}
+
 func TestDiscoverPostgresState_StatusError(t *testing.T) {
 	ctx := t.Context()
 
@@ -628,6 +644,17 @@ func TestDetermineRemedialAction_StalePrimaryDemote(t *testing.T) {
 			require.Equal(t, tt.expectedAction, got)
 		})
 	}
+}
+
+func TestDeterminePostgresNotRunningAction_RestoreSentinel(t *testing.T) {
+	state := postgresState{
+		dirInitialized:         true,
+		restoreSentinelPresent: true,
+	}
+	assert.Equal(t, remedialActionRestoreFromBackup, (&MultipoolerManager{}).determinePostgresNotRunningAction(state))
+
+	state.bootstrapSentinelPresent = true
+	assert.Equal(t, remedialActionCreateFirstBackup, (&MultipoolerManager{}).determinePostgresNotRunningAction(state))
 }
 
 // TestDeterminePostgresNotRunningAction_DivergedStartsHeld verifies recover-and-
@@ -1634,6 +1661,7 @@ func TestPostgresStateEqual(t *testing.T) {
 		backupsAvailable:         true,
 		pgMode:                   pgmode.Primary,
 		bootstrapSentinelPresent: true,
+		restoreSentinelPresent:   true,
 	}
 
 	t.Run("equal states", func(t *testing.T) {
@@ -1650,6 +1678,7 @@ func TestPostgresStateEqual(t *testing.T) {
 		{"backupsAvailable", func() postgresState { s := base; s.backupsAvailable = false; return s }()},
 		{"pgMode", func() postgresState { s := base; s.pgMode = pgmode.InRecovery; return s }()},
 		{"bootstrapSentinelPresent", func() postgresState { s := base; s.bootstrapSentinelPresent = false; return s }()},
+		{"restoreSentinelPresent", func() postgresState { s := base; s.restoreSentinelPresent = false; return s }()},
 	}
 	for _, tc := range tests {
 		t.Run("differs in "+tc.name, func(t *testing.T) {
