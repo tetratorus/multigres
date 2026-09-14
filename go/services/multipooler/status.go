@@ -18,6 +18,7 @@ package multipooler
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -175,9 +176,9 @@ func buildBackupStatusView(snap backupengine.Snapshot) BackupStatusView {
 		LeaseHeld:     snap.LeaseHeld,
 	}
 	if snap.ArchiveFailedCount > 0 {
-		view.ArchiveFailures = fmt.Sprintf("%d", snap.ArchiveFailedCount)
-		if !snap.LastArchiveFailed.IsZero() {
-			view.ArchiveFailures = fmt.Sprintf("%d (last %s ago)", snap.ArchiveFailedCount, formatAge(snap.LastArchiveFailed))
+		view.ArchiveFailures = strconv.FormatInt(snap.ArchiveFailedCount, 10)
+		if age := formatAge(snap.LastArchiveFailed); age != "" {
+			view.ArchiveFailures += fmt.Sprintf(" (last %s ago)", age)
 		}
 	}
 	if view.HasBackup {
