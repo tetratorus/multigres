@@ -120,6 +120,8 @@ type postgresState struct {
 	connInfo                 *multipoolermanagerdatapb.PrimaryConnInfo
 	pgMode                   pgmode.Mode
 	bootstrapSentinelPresent bool
+	// restoreSentinelPresent is true when a prior restore left torn PGDATA.
+	restoreSentinelPresent bool
 	// rewindSentinelPresent is true when a pg_rewind sentinel is on disk, meaning a
 	// prior rewind did not verifiably complete (see rewind_sentinel.go). It is the
 	// durable, restart-surviving signal that the data directory may be
@@ -142,6 +144,7 @@ func postgresStateEqual(a, b postgresState) bool {
 		a.backupsAvailable == b.backupsAvailable &&
 		a.pgMode == b.pgMode &&
 		a.bootstrapSentinelPresent == b.bootstrapSentinelPresent &&
+		a.restoreSentinelPresent == b.restoreSentinelPresent &&
 		a.rewindSentinelPresent == b.rewindSentinelPresent &&
 		a.rewindSourceReady == b.rewindSourceReady
 }
@@ -438,6 +441,14 @@ func (pm *MultipoolerManager) discoverPostgresState(ctx context.Context) (postgr
 		return state, fmt.Errorf("check bootstrap sentinel: %w", err)
 	}
 	state.bootstrapSentinelPresent = sentinelPresent
+
+	restoreSentinelPresent, err := pm.hasRestoreSentinel()
+	if err != nil {
+		// An unreadable restore sentinel leaves the restore state ambiguous, so
+		// skip this tick rather than risk starting postgres on torn PGDATA.
+		return state, fmt.Errorf("check restore sentinel: %w", err)
+	}
+	state.restoreSentinelPresent = restoreSentinelPresent
 
 	rewindSentinelPresent, err := pm.hasRewindSentinel()
 	if err != nil {
@@ -1130,6 +1141,12 @@ func (pm *MultipoolerManager) determinePostgresNotRunningAction(state postgresSt
 	if state.bootstrapSentinelPresent {
 		return remedialActionCreateFirstBackup
 	}
+	// A sentinel from a prior restore attempt means pg_data is a torn restore;
+	// it may even read as initialized (PG_VERSION copied), so route it back to
+	// restore, which removes it first.
+	if state.restoreSentinelPresent {
+		return remedialActionRestoreFromBackup
+	}
 	// Postgres not running: start it (or restore/bootstrap below).
 	if state.dirInitialized {
 		return remedialActionStartPostgres
@@ -1553,16 +1570,40 @@ func latestCompleteBackup(backups []*multipoolermanagerdatapb.BackupMetadata) *m
 func (pm *MultipoolerManager) restoreAndStartPostgres(ctx context.Context) error {
 	// Re-check status to ensure conditions haven't changed
 	// (e.g., another process may have initialized or started postgres while we waited for lock)
-	if pm.pgctldClient != nil {
-		statusResp, err := pm.pgctldClient.Status(ctx, &pgctldpb.StatusRequest{})
-		if err == nil {
-			// If directory is now initialized, skip restore
-			if statusResp.Status != pgctldpb.ServerStatus_NOT_INITIALIZED {
-				pm.logger.InfoContext(ctx, "MonitorPostgres: directory became initialized after acquiring lock, skipping restore") //nolint:sloglint // message intentionally starts with an operation name or proper noun
-				return nil
-			}
+	if pm.pgctldClient == nil {
+		return errors.New("failed to re-check postgres status: pgctld client is unavailable")
+	}
+	statusResp, err := pm.pgctldClient.Status(ctx, &pgctldpb.StatusRequest{})
+	if err != nil {
+		return fmt.Errorf("failed to re-check postgres status: %w", err)
+	}
+	if statusResp == nil {
+		return errors.New("failed to re-check postgres status: empty response")
+	}
+
+	// Do not remove PGDATA unless pgctld confirms postgres is stopped or
+	// uninitialized. Any other status may mean postgres is running or starting.
+	if statusResp.Status != pgctldpb.ServerStatus_NOT_INITIALIZED &&
+		statusResp.Status != pgctldpb.ServerStatus_STOPPED {
+		pm.logger.InfoContext(ctx, "MonitorPostgres: postgres is active, skipping restore", "status", statusResp.Status.String())
+		return nil
+	}
+
+	restoreSentinelPresent, err := pm.hasRestoreSentinel()
+	if err != nil {
+		return fmt.Errorf("failed to check restore sentinel: %w", err)
+	}
+	if restoreSentinelPresent {
+		pm.logger.WarnContext(ctx, "restore sentinel from prior attempt detected; removing torn data directory before retry")
+		if err := pm.removeDataDirectory(); err != nil {
+			return fmt.Errorf("failed to remove torn data directory from prior restore attempt: %w", err)
 		}
-		// If status check fails, continue with restore attempt
+	}
+
+	// If directory is now initialized and there is no restore sentinel, skip restore.
+	if !restoreSentinelPresent && statusResp.Status != pgctldpb.ServerStatus_NOT_INITIALIZED {
+		pm.logger.InfoContext(ctx, "MonitorPostgres: directory became initialized after acquiring lock, skipping restore") //nolint:sloglint // message intentionally starts with an operation name or proper noun
+		return nil
 	}
 
 	// Get the latest complete backup. ListBackups returns backups
