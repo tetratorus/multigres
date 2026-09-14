@@ -380,6 +380,15 @@ func TestLeaderNeedsReplacementAnalyzer_Analyze(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, problems, 1)
 		require.Equal(t, types.ProblemShardStuck, problems[0].Code)
+
+		// The alert must be actionable on its own: name the cause, the safety gate
+		// that blocks automatic failover, the members orch cannot recruit, and the
+		// operator override path.
+		desc := problems[0].Description
+		require.Contains(t, desc, "needs a new leader (LeaderUnhealthy)")
+		require.Contains(t, desc, "majority not satisfied: recruited 0 of 3 cohort poolers, need at least 2")
+		require.Contains(t, desc, "unrecruitable cohort members: [zone1_leader-1 (leader), zone1_follower-1, zone1_follower-2]")
+		require.Contains(t, desc, "multigres cluster apply-rule-change")
 	})
 
 	t.Run("ignores healthy leader (reachable)", func(t *testing.T) {

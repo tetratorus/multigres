@@ -236,10 +236,34 @@ A **majority** of the _incoming_ cohort is still required, for the same
 single-winner reason as failover: it stops two concurrent bootstrap attempts
 from both succeeding.
 
-> TODO: this path is also the intended home for operator-driven overrides
-> (forced failover when a quorum is permanently lost). Document the operator
-> entry point once it lands.
->
+### Operator override: forced failover after a quorum is permanently lost
+
+The same path is the operator/provisioner escape hatch when Multiorch reports
+`ShardStuck` (see [When automatic failover is unsafe](recovery.md#when-automatic-failover-is-unsafe)):
+the leader must be replaced, but too few outgoing-cohort members are
+recruitable to prove revocation, so Multiorch refuses to fail over on its own.
+
+The entry point is `multigres cluster apply-rule-change`, which calls
+`ApplyCertifiedRuleChange` on Multiorch
+([`multiorchservice.proto`](../../proto/multiorchservice.proto)). The
+operator supplies the outgoing rule (`--outgoing-rule-term`,
+`--outgoing-leader-subterm`) and a `--frozen-lsn`, and by doing so **takes
+over the revocation proof** that Multiorch could not obtain: they attest that
+no member of the outgoing cohort — including the ones Multiorch cannot reach —
+will commit any write past that rule/LSN. If the attestation is wrong (an
+unreachable node was the most advanced, or comes back and keeps accepting
+writes), committed transactions can be lost. That is exactly why Multiorch
+never derives this certificate itself.
+
+`--unsafe-derive-cert-from-reachable` asks multiadmin to probe only the
+_proposed_ cohort and derive the outgoing rule and frozen LSN from what it
+finds. It is a convenience for when the lost members are known to be
+destroyed; it cannot see what those members had, so it carries the data-loss
+risk in its name.
+
+The incoming-cohort majority requirement still applies, so two operators
+racing to force different outcomes cannot both succeed.
+
 > TODO: add a worked end-to-end example — a 3-node `AT_LEAST_2` cohort losing
 > its leader, traced step by step (recruit responses, term/LSN selection,
 > promote, the diverged-follower pg_rewind) — to make the protocol concrete.

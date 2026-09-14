@@ -58,7 +58,8 @@ func TestEngine_UpdateDetectedProblems(t *testing.T) {
 	// Test with multiple problems
 	problems := []types.Problem{
 		{
-			CheckName: "PrimaryIsDead",
+			Code:      types.ProblemShardStuck,
+			CheckName: "LeaderNeedsReplacement",
 			Scope:     types.ScopePooler,
 			ShardKey: &clustermetadatapb.ShardKey{
 				Database:   "testdb",
@@ -72,6 +73,7 @@ func TestEngine_UpdateDetectedProblems(t *testing.T) {
 			},
 		},
 		{
+			Code:      types.ProblemReplicaNotReplicating,
 			CheckName: "ReplicaNotReplicating",
 			Scope:     types.ScopePooler,
 			ShardKey: &clustermetadatapb.ShardKey{
@@ -91,12 +93,14 @@ func TestEngine_UpdateDetectedProblems(t *testing.T) {
 	data = engine.collectDetectedProblemsData()
 
 	require.Len(t, data, 2)
-	assert.Equal(t, "PrimaryIsDead", data[0].AnalysisType)
+	assert.Equal(t, "LeaderNeedsReplacement", data[0].AnalysisType)
+	assert.Equal(t, "ShardStuck", data[0].ProblemCode)
 	assert.Equal(t, "testdb", data[0].DBNamespace)
 	assert.Equal(t, "shard1", data[0].Shard)
 	assert.Contains(t, data[0].EntityID, "pooler1")
 
 	assert.Equal(t, "ReplicaNotReplicating", data[1].AnalysisType)
+	assert.Equal(t, "ReplicaNotReplicating", data[1].ProblemCode)
 	assert.Equal(t, "testdb", data[1].DBNamespace)
 	assert.Equal(t, "shard2", data[1].Shard)
 	assert.Contains(t, data[1].EntityID, "pooler2")
@@ -250,7 +254,8 @@ func TestMetrics_DetectedProblemsCallback(t *testing.T) {
 	err = metrics.RegisterDetectedProblemsCallback(func() []DetectedProblemData {
 		capturedData = []DetectedProblemData{
 			{
-				AnalysisType: "PrimaryIsDead",
+				AnalysisType: "LeaderNeedsReplacement",
+				ProblemCode:  "ShardStuck",
 				DBNamespace:  "testdb",
 				Shard:        "shard1",
 				EntityID:     "pooler1",
