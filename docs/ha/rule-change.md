@@ -256,7 +256,7 @@ writes), committed transactions can be lost. That is exactly why Multiorch
 never derives this certificate itself.
 
 `--unsafe-derive-cert-from-reachable` asks multiadmin to probe only the
-*proposed* cohort and derive the outgoing rule and frozen LSN from what it
+_proposed_ cohort and derive the outgoing rule and frozen LSN from what it
 finds. It is a convenience for when the lost members are known to be
 destroyed; it cannot see what those members had, so it carries the data-loss
 risk in its name.

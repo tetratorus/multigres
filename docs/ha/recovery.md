@@ -99,17 +99,17 @@ old leader keeps accepting durable writes — split brain, and eventually data
 loss. Multiorch refuses instead, and reports one of these alert-only problem
 codes ([`types.go`](../../go/services/multiorch/recovery/types/types.go)):
 
-| Problem code             | Meaning                                                                                                                                           | Who acts                                                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `ShardStuck`             | The leader must be replaced, but the recruitable subset of the cohort is not a sufficient recruitment quorum. Writes are halted.                  | **Operator / provisioner.** Automatic recovery resumes only if enough cohort members become recruitable again. |
-| `NoHealthyCohortMembers` | No initialized pooler has a fresh, valid health report; Multiorch is blind and will not convict the leader on stale evidence.                     | Usually transient (cold start, health-stream outage). Investigate connectivity from Multiorch to the poolers. |
-| `LeaderHealthUnknown`    | The leader can neither be confirmed healthy nor convicted, but a recruitment quorum exists. Nothing is blocked yet.                              | Watch; investigate if persistent.                                                                           |
-| `ShardAtRisk`            | The leader is healthy, but if it were lost the remaining cohort could not recover. Not an outage — a warning that the next failure will be one.  | Restore or add cohort members before the leader fails.                                                      |
+| Problem code             | Meaning                                                                                                                                         | Who acts                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `ShardStuck`             | The leader must be replaced, but the recruitable subset of the cohort is not a sufficient recruitment quorum. Writes are halted.                | **Operator / provisioner.** Automatic recovery resumes only if enough cohort members become recruitable again. |
+| `NoHealthyCohortMembers` | No initialized pooler has a fresh, valid health report; Multiorch is blind and will not convict the leader on stale evidence.                   | Usually transient (cold start, health-stream outage). Investigate connectivity from Multiorch to the poolers.  |
+| `LeaderHealthUnknown`    | The leader can neither be confirmed healthy nor convicted, but a recruitment quorum exists. Nothing is blocked yet.                             | Watch; investigate if persistent.                                                                              |
+| `ShardAtRisk`            | The leader is healthy, but if it were lost the remaining cohort could not recover. Not an outage — a warning that the next failure will be one. | Restore or add cohort members before the leader fails.                                                         |
 
 All four are surfaced the same way:
 
 - a `WARN` log line `non-actionable problem detected; human intervention
-  required` with `problem_code`, shard identity and `description`
+required` with `problem_code`, shard identity and `description`
   ([`alert_only.go`](../../go/services/multiorch/recovery/actions/alert_only.go));
 - the `multiorch.recovery.detected_problems` gauge, whose `problem_code`
   attribute is the dimension to page on — `analysis_type` alone is not enough,
