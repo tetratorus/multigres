@@ -266,6 +266,8 @@ func (p *localProvisioner) provisionPgctld(ctx context.Context, dbName, tableGro
 		"server",
 		"--pooler-dir", poolerDir,
 		"--grpc-port", strconv.Itoa(grpcPort),
+		// pgctld's control API is only dialed via localhost; keep it off other interfaces.
+		"--grpc-bind-address", "127.0.0.1",
 		"--http-port", strconv.Itoa(httpPort),
 		"--pg-port", strconv.Itoa(pgPort),
 		"--pg-database", pgDatabase,

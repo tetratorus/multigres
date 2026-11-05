@@ -812,6 +812,17 @@ func (s *PgCtldService) PgRewind(ctx context.Context, req *pb.PgRewindRequest) (
 		"source_port", req.GetSourcePort(),
 		"dry_run", req.GetDryRun())
 
+	// Validate the request before touching postgres (crash recovery below).
+	// Construct source server connection string (without password - will use PGPASSWORD env var).
+	// Include application_name if provided (used for replication identification).
+	sourceServer, err := buildPgRewindSourceServer(req.GetSourceHost(), req.GetSourcePort(), s.ctldConfig.User, req.GetApplicationName())
+	if err != nil {
+		return nil, fmt.Errorf("invalid pg_rewind request: %w", err)
+	}
+	if err := validatePgRewindExtraArgs(req.GetExtraArgs()); err != nil {
+		return nil, fmt.Errorf("invalid pg_rewind request: %w", err)
+	}
+
 	// Check if postgres is cleanly stopped before pg_rewind
 	// If not, try crash recovery - this is needed for rewind dry-run to work
 	// This check is best effort. It's not harmful to try the pg_rewind if
@@ -825,17 +836,6 @@ func (s *PgCtldService) PgRewind(ctx context.Context, req *pb.PgRewindRequest) (
 		if err := s.runCrashRecovery(ctx); err != nil {
 			s.logger.WarnContext(ctx, "crash recovery failed (continuing anyway)", "error", err)
 		}
-	}
-
-	// Construct source server connection string (without password - will use PGPASSWORD env var)
-	// Include application_name if provided (used for replication identification)
-	// connect_timeout ensures pg_rewind fails fast if the source is not yet ready to accept
-	// connections (e.g. newly-promoted primary still in crash recovery), allowing the caller
-	// to retry rather than blocking for the OS TCP timeout.
-	sourceServer := fmt.Sprintf("host=%s port=%d user=%s dbname=postgres connect_timeout=5",
-		req.GetSourceHost(), req.GetSourcePort(), s.ctldConfig.User)
-	if req.GetApplicationName() != "" {
-		sourceServer = fmt.Sprintf("%s application_name=%s", sourceServer, req.GetApplicationName())
 	}
 
 	// Use the shared rewind function with detailed result, passing password separately

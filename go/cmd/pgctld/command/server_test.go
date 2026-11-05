@@ -856,6 +856,31 @@ func TestPgCtldService_StopRewindStart(t *testing.T) {
 	_, _ = service.Stop(ctx, &pb.StopRequest{Mode: "fast"})
 }
 
+func TestPgCtldService_PgRewindRejectsUntrustedInput(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	baseDir := t.TempDir()
+	t.Setenv(constants.PgDataDirEnvVar, filepath.Join(baseDir, "pg_data"))
+
+	binDir := filepath.Join(baseDir, "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0o755))
+	testutil.CreateMockPostgreSQLBinaries(t, binDir)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	service, err := NewPgCtldService(logger, testServiceConfig, 30, baseDir, "localhost", 0, "")
+	require.NoError(t, err)
+	defer service.Close()
+
+	for _, req := range []*pb.PgRewindRequest{
+		{SourceHost: "127.0.0.1", SourcePort: 5433, ApplicationName: "x user=attacker"},
+		{SourceHost: "evil host=127.0.0.1", SourcePort: 5433},
+		{SourceHost: "127.0.0.1", SourcePort: 5433, ExtraArgs: []string{"--source-server", "host=evil"}},
+		{SourceHost: "127.0.0.1", SourcePort: 5433, ExtraArgs: []string{"--restore-target-wal"}},
+	} {
+		_, err := service.PgRewind(t.Context(), req)
+		assert.ErrorContains(t, err, "invalid pg_rewind request", "request %v", req)
+	}
+}
+
 // testLogger returns a no-op logger for testing
 func testLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
