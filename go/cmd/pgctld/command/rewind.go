@@ -16,8 +16,12 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/multigres/multigres/go/services/pgctld"
@@ -30,8 +34,83 @@ type PgRewindResult struct {
 	Output  string
 }
 
+// maxPgRewindApplicationNameLength is PostgreSQL's application_name limit (NAMEDATALEN - 1).
+const maxPgRewindApplicationNameLength = 63
+
+// allowedPgRewindExtraArgs lists the pg_rewind flags a caller may add. Anything
+// else (e.g. --source-server, --target-pgdata, --restore-target-wal,
+// --config-file) could redirect pg_rewind or make it run arbitrary commands.
+var allowedPgRewindExtraArgs = map[string]bool{
+	"-R":                    true,
+	"--write-recovery-conf": true,
+	"-P":                    true,
+	"--progress":            true,
+	"--debug":               true,
+}
+
+var pgRewindHostnameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
+
+// validatePgRewindExtraArgs rejects any pg_rewind argument not in allowedPgRewindExtraArgs.
+func validatePgRewindExtraArgs(extraArgs []string) error {
+	for _, arg := range extraArgs {
+		if !allowedPgRewindExtraArgs[arg] {
+			return fmt.Errorf("pg_rewind argument %q is not allowed", arg)
+		}
+	}
+	return nil
+}
+
+// quoteConnValue quotes a value for a libpq keyword/value connection string so
+// it cannot add or override other connection parameters.
+func quoteConnValue(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `'`, `\'`)
+	return "'" + v + "'"
+}
+
+// buildPgRewindSourceServer validates the caller-supplied source fields and
+// returns the libpq connection string pg_rewind uses to reach the source.
+//
+// The password is not part of the string (it is passed via PGPASSWORD), but it
+// is sent to whatever host is named here. require_auth=scram-sha-256 stops
+// libpq from handing the password over in cleartext (or under md5) to a host
+// that asks for it; every multigres pg_hba.conf entry uses scram-sha-256.
+func buildPgRewindSourceServer(host string, port int32, user, applicationName string) (string, error) {
+	if host == "" {
+		return "", errors.New("source_host is required")
+	}
+	if net.ParseIP(host) == nil && !pgRewindHostnameRe.MatchString(host) {
+		return "", fmt.Errorf("invalid source_host %q", host)
+	}
+	if port <= 0 || port > 65535 {
+		return "", fmt.Errorf("invalid source_port %d", port)
+	}
+	if len(applicationName) > maxPgRewindApplicationNameLength {
+		return "", fmt.Errorf("application_name exceeds %d characters", maxPgRewindApplicationNameLength)
+	}
+	for _, r := range applicationName {
+		if r < 0x21 || r > 0x7e {
+			return "", fmt.Errorf("invalid character in application_name %q", applicationName)
+		}
+	}
+
+	// connect_timeout ensures pg_rewind fails fast if the source is not yet ready to accept
+	// connections (e.g. newly-promoted primary still in crash recovery), allowing the caller
+	// to retry rather than blocking for the OS TCP timeout.
+	conn := fmt.Sprintf("host=%s port=%d user=%s dbname=postgres connect_timeout=5 require_auth=scram-sha-256",
+		quoteConnValue(host), port, quoteConnValue(user))
+	if applicationName != "" {
+		conn += " application_name=" + quoteConnValue(applicationName)
+	}
+	return conn, nil
+}
+
 func PgRewindWithResult(ctx context.Context, logger *slog.Logger, sourceServer, password string, dryRun bool, extraArgs []string) (*PgRewindResult, error) {
 	result := &PgRewindResult{}
+	if err := validatePgRewindExtraArgs(extraArgs); err != nil {
+		result.Message = "Rewind failed"
+		return result, err
+	}
 	dataDir := pgctld.PostgresDataDir()
 
 	args := []string{
